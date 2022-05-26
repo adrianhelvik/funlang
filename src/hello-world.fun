@@ -1,5 +1,6 @@
-print "Hello world"
+println "How do you do?"
+println "I am fine..."
 
-for i in 0 to 10 {
-  print i
-}
+println("a", "b", "c")
+println("Hello", "world")
+println("Here is a number ", add(1234, 10))
