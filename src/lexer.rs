@@ -31,7 +31,7 @@ pub fn lex(source: &str) -> Vec<String> {
                     }
                     empty = true;
                 }
-                '(' | ')' | '{' | '}' | '[' | ']' | ',' => {
+                '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' => {
                     if !empty {
                         tokens.push(word.clone());
                         word = String::new();
@@ -52,4 +52,74 @@ pub fn lex(source: &str) -> Vec<String> {
     }
 
     tokens
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    pub fn it_can_tokenize_a_word() {
+        let tokens = lex("abc");
+
+        assert_eq!(tokens, vec![String::from("abc")],);
+    }
+
+    #[test]
+    pub fn it_can_split_words() {
+        let tokens = lex("abc def geh");
+
+        assert_eq!(
+            tokens,
+            vec![
+                String::from("abc"),
+                String::from("def"),
+                String::from("geh")
+            ],
+        );
+    }
+
+    #[test]
+    pub fn it_can_parse_strings() {
+        let tokens = lex("print \"Hello world!\"");
+
+        assert_eq!(
+            tokens,
+            vec![String::from("print"), String::from("\"Hello world!\""),],
+        );
+    }
+
+    #[test]
+    pub fn it_can_parse_parens() {
+        let tokens = lex("(){}[]");
+
+        assert_eq!(
+            tokens,
+            vec![
+                String::from("("),
+                String::from(")"),
+                String::from("{"),
+                String::from("}"),
+                String::from("["),
+                String::from("]"),
+            ]
+        );
+    }
+
+    #[test]
+    pub fn it_can_lex_a_binary_func_call() {
+        let tokens = lex("print(\"Hello\", \"world\")");
+
+        assert_eq!(
+            tokens,
+            vec![
+                String::from("print"),
+                String::from("("),
+                String::from("\"Hello\""),
+                String::from(","),
+                String::from("\"world\""),
+                String::from(")"),
+            ]
+        );
+    }
 }

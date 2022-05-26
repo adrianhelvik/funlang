@@ -1,5 +1,4 @@
-use crate::parser::Expression;
-use crate::parser::Program;
+use crate::types::*;
 
 pub fn fun_add(expr: Expression) -> i64 {
     match expr {
@@ -41,10 +40,17 @@ pub fn eval_expr(expr: Expression, output: &mut String) -> Expression {
                 panic!("Call to undefined function {}", func_call.ident);
             }
         }
+        Expression::Assignment(assignment) => {
+            let value = eval_expr(assignment.expr, output);
+
+            value
+        }
         Expression::String(string) => Expression::String(string),
         Expression::Touple(value) => Expression::Touple(value),
+        Expression::Int(value) => Expression::Int(value),
+        Expression::Variable(ident) => Expression::Null,
         _ => {
-            panic!("Failed to eval expression {:#?}", expr);
+            panic!("Failed to eval expression {:?}", expr);
         }
     }
 }
