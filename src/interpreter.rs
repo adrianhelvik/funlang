@@ -1,4 +1,16 @@
 use crate::types::*;
+//use std::cell::RefCell;
+//use std::collections::HashMap;
+
+pub fn eval_program(program: Program) -> String {
+    let mut output = String::new();
+
+    for expr in program.expressions {
+        eval_expr(expr, &mut output);
+    }
+
+    return output;
+}
 
 pub fn fun_add(expr: Expression) -> i64 {
     match expr {
@@ -16,7 +28,10 @@ pub fn fun_add(expr: Expression) -> i64 {
     }
 }
 
-pub fn eval_expr(expr: Expression, output: &mut String) -> Expression {
+pub fn eval_expr(
+    expr: Expression,
+    output: &mut String,
+) -> Expression {
     match expr {
         Expression::FuncCall(func_call) => {
             if func_call.ident == "print" {
@@ -48,24 +63,17 @@ pub fn eval_expr(expr: Expression, output: &mut String) -> Expression {
         Expression::String(string) => Expression::String(string),
         Expression::Touple(value) => Expression::Touple(value),
         Expression::Int(value) => Expression::Int(value),
-        Expression::Variable(ident) => Expression::Null,
+        Expression::Variable(_ident) => Expression::Null,
         _ => {
             panic!("Failed to eval expression {:?}", expr);
         }
     }
 }
 
-pub fn eval_program(program: Program) -> String {
-    let mut output = String::new();
-
-    for expr in program.expressions {
-        eval_expr(expr, &mut output);
-    }
-
-    return output;
-}
-
-pub fn expr_to_str(expr: Expression, output: &mut String) -> String {
+pub fn expr_to_str(
+    expr: Expression,
+    output: &mut String,
+) -> String {
     match expr {
         Expression::String(string) => string,
         Expression::Int(int) => int.to_string(),
