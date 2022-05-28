@@ -51,13 +51,51 @@ pub mod tests {
         assert_eq!(eval(source), "125");
     }
 
-    //#[test]
+    #[test]
     pub fn you_can_assign_variables() {
         let source = r#"
             x: 10
             print x
         "#;
 
-        assert_eq!(eval(source), "125");
+        assert_eq!(eval(source), "10");
+    }
+
+    #[test]
+    pub fn blocks_are_lazily_evaluated() {
+        let source = r#"
+            {
+                println "Hello world"
+            }
+        "#;
+
+        assert_eq!(eval(source), "");
+    }
+
+    #[test]
+    pub fn you_can_call_blocks() {
+        let source = r#"
+            block: {
+                println "Hello world"
+            }
+            block()
+        "#;
+        assert_eq!(eval(source), "Hello world\n");
+    }
+
+    #[test]
+    pub fn you_can_create_child_scopes() {
+        let source = r#"
+            x: "outer"
+            f: {
+                x: "inner"
+                print x()
+                print " "
+            }
+            f()
+            print x
+        "#;
+
+        assert_eq!(eval(source), "inner outer");
     }
 }

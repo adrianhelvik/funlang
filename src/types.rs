@@ -17,6 +17,7 @@ pub enum Expression {
     Touple(Vec<Expression>),
     Assignment(Box<Assignment>),
     Variable(String),
+    Block(Block),
     Null,
 }
 
@@ -24,4 +25,9 @@ pub enum Expression {
 pub struct Assignment {
     pub ident: String,
     pub expr: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Block {
+    pub expressions: Vec<Expression>,
 }
