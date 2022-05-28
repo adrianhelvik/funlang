@@ -31,7 +31,7 @@ pub fn lex(source: &str) -> Vec<String> {
                     }
                     empty = true;
                 }
-                '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' => {
+                '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | '=' => {
                     if !empty {
                         tokens.push(word.clone());
                         word = String::new();

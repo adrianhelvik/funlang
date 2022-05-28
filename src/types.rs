@@ -16,6 +16,7 @@ pub enum Expression {
     FuncCall(FuncCall),
     Touple(Vec<Expression>),
     Assignment(Box<Assignment>),
+    ReAssignment(Box<ReAssignment>),
     Variable(String),
     Block(Block),
     Null,
@@ -23,6 +24,12 @@ pub enum Expression {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assignment {
+    pub ident: String,
+    pub expr: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReAssignment {
     pub ident: String,
     pub expr: Expression,
 }

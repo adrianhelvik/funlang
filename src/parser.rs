@@ -32,10 +32,30 @@ fn parse_expr_list(input_tokens: Tokens) -> (Vec<Expression>, Tokens) {
 }
 
 fn parse_assignment(tokens: Tokens) -> Option<(Assignment, Tokens)> {
+    if let Some(tokens) = take("let", tokens) {
+        if let Some((ident, tokens)) = take_ident(tokens) {
+            if let Some(tokens) = take("=", tokens) {
+                if let Some((expr, tokens)) = parse_next_expr(tokens) {
+                    Some((Assignment { ident, expr }, tokens))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn parse_reassignment(tokens: Tokens) -> Option<(ReAssignment, Tokens)> {
     if let Some((ident, tokens)) = take_ident(tokens) {
-        if let Some(tokens) = take(":", tokens) {
+        if let Some(tokens) = take("=", tokens) {
             if let Some((expr, tokens)) = parse_next_expr(tokens) {
-                Some((Assignment { ident, expr }, tokens))
+                Some((ReAssignment { ident, expr }, tokens))
             } else {
                 None
             }
@@ -144,6 +164,10 @@ pub fn parse_int(token: String) -> Option<i64> {
 pub fn parse_next_expr(tokens: Tokens) -> Option<(Expression, Tokens)> {
     if tokens.len() == 0 {
         None
+    } else if let Some((value, tokens)) = parse_assignment(tokens.clone()) {
+        Some((Expression::Assignment(Box::new(value)), tokens))
+    } else if let Some((value, tokens)) = parse_reassignment(tokens.clone()) {
+        Some((Expression::ReAssignment(Box::new(value)), tokens))
     } else if let Some(value) = parse_str(tokens[0].clone()) {
         Some((Expression::String(value), (&tokens[1..]).to_vec()))
     } else if let Some(value) = parse_int(tokens[0].clone()) {
@@ -152,8 +176,6 @@ pub fn parse_next_expr(tokens: Tokens) -> Option<(Expression, Tokens)> {
         Some((value, tokens))
     } else if let Some((value, tokens)) = parse_block(tokens.clone()) {
         Some((Expression::Block(value), tokens))
-    } else if let Some((value, tokens)) = parse_assignment(tokens.clone()) {
-        Some((Expression::Assignment(Box::new(value)), tokens))
     } else if let Some((value, tokens)) = parse_func_call(tokens.clone()) {
         Some((Expression::FuncCall(value), tokens))
     } else if let Some((value, tokens)) = take_ident(tokens.clone()) {
@@ -340,7 +362,7 @@ pub mod tests {
 
     #[test]
     pub fn it_can_parse_assignment() {
-        let (assignment, _tokens) = parse_assignment(lex("x: 10")).unwrap();
+        let (assignment, _tokens) = parse_assignment(lex("let x = 10")).unwrap();
 
         assert_eq!(
             assignment,
@@ -369,7 +391,7 @@ pub mod tests {
     #[test]
     pub fn you_can_assign_variables() {
         let source = r#"
-            x: 10
+            let x = 10
             print x
         "#;
 
@@ -380,6 +402,35 @@ pub mod tests {
                     Expression::Assignment(Box::new(Assignment {
                         ident: String::from("x"),
                         expr: Expression::Int(10),
+                    })),
+                    Expression::FuncCall(FuncCall {
+                        ident: String::from("print"),
+                        arg: Box::new(Expression::Variable(String::from("x"))),
+                    })
+                ],
+            }
+        )
+    }
+
+    #[test]
+    pub fn you_can_reassign_variables() {
+        let source = r#"
+            let x = 1
+            x = 2
+            print x
+        "#;
+
+        assert_eq!(
+            parse(lex(source)),
+            Program {
+                expressions: vec![
+                    Expression::Assignment(Box::new(Assignment {
+                        ident: String::from("x"),
+                        expr: Expression::Int(1),
+                    })),
+                    Expression::ReAssignment(Box::new(ReAssignment {
+                        ident: String::from("x"),
+                        expr: Expression::Int(2),
                     })),
                     Expression::FuncCall(FuncCall {
                         ident: String::from("print"),

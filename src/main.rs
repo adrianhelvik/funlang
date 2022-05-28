@@ -54,7 +54,7 @@ pub mod tests {
     #[test]
     pub fn you_can_assign_variables() {
         let source = r#"
-            x: 10
+            let x = 10
             print x
         "#;
 
@@ -75,7 +75,7 @@ pub mod tests {
     #[test]
     pub fn you_can_call_blocks() {
         let source = r#"
-            block: {
+            let block = {
                 println "Hello world"
             }
             block()
@@ -86,10 +86,10 @@ pub mod tests {
     #[test]
     pub fn you_can_create_child_scopes() {
         let source = r#"
-            x: "outer"
-            f: {
-                x: "inner"
-                print x()
+            let x = "outer"
+            let f = {
+                let x = "inner"
+                print(x)
                 print " "
             }
             f()
@@ -97,5 +97,19 @@ pub mod tests {
         "#;
 
         assert_eq!(eval(source), "inner outer");
+    }
+
+    #[test]
+    pub fn you_can_assign_to_parent_scopes() {
+        let source = r#"
+            let x = "outer"
+            let f = {
+                x = "inner"
+            }
+            f()
+            print x
+        "#;
+
+        assert_eq!(eval(source), "inner");
     }
 }
