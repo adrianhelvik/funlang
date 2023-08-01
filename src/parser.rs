@@ -1,23 +1,29 @@
+use crate::types::Possibly::{None, Some};
 use crate::types::*;
 
-type Tokens = Vec<String>;
-
-pub fn parse(input: Tokens) -> Program {
+pub fn parse(input: Tokens) -> Result<Program, ParseError> {
     let (expressions, tokens) = parse_expr_list(input);
 
+    let tokens = skip("\n", tokens);
+
     if tokens.len() > 0 {
-        panic!("Failed to parse {:#?}\nParsed: {:#?}", tokens, expressions);
+        return Err(ParseError {
+            message: format!("Unexpected token '{}'", tokens[0].value),
+            token: tokens[0].clone(),
+        });
     }
 
-    Program { expressions }
+    Ok(Program { expressions })
 }
 
-fn parse_expr_list(input_tokens: Tokens) -> (Vec<Expression>, Tokens) {
+fn parse_expr_list(tokens: Tokens) -> (Vec<Expression>, Tokens) {
+    let tokens = skip("\n", tokens);
+
     let mut expressions = vec![];
-    let mut tokens = input_tokens.clone();
+    let mut tokens = tokens.clone();
     let mut remaining_tokens = tokens.len();
 
-    while let Some((expr, next_tokens)) = parse_next_expr(tokens.clone()) {
+    while let Some((expr, next_tokens)) = parse_next_expr_allow_newline(tokens.clone()) {
         expressions.push(expr);
         tokens = next_tokens;
 
@@ -31,12 +37,12 @@ fn parse_expr_list(input_tokens: Tokens) -> (Vec<Expression>, Tokens) {
     (expressions, tokens.clone())
 }
 
-fn parse_assignment(tokens: Tokens) -> Option<(Assignment, Tokens)> {
+fn parse_var_decl(tokens: Tokens) -> Possibly<(VarDecl, Tokens), ParseError> {
     if let Some(tokens) = take("let", tokens) {
         if let Some((ident, tokens)) = take_ident(tokens) {
             if let Some(tokens) = take("=", tokens) {
                 if let Some((expr, tokens)) = parse_next_expr(tokens) {
-                    Some((Assignment { ident, expr }, tokens))
+                    Some((VarDecl { ident, expr }, tokens))
                 } else {
                     None
                 }
@@ -51,7 +57,7 @@ fn parse_assignment(tokens: Tokens) -> Option<(Assignment, Tokens)> {
     }
 }
 
-fn parse_reassignment(tokens: Tokens) -> Option<(ReAssignment, Tokens)> {
+fn parse_reassignment(tokens: Tokens) -> Possibly<(ReAssignment, Tokens), ParseError> {
     if let Some((ident, tokens)) = take_ident(tokens) {
         if let Some(tokens) = take("=", tokens) {
             if let Some((expr, tokens)) = parse_next_expr(tokens) {
@@ -67,15 +73,15 @@ fn parse_reassignment(tokens: Tokens) -> Option<(ReAssignment, Tokens)> {
     }
 }
 
-pub fn take(token: &str, tokens: Tokens) -> Option<Tokens> {
-    if tokens.len() > 0 && tokens[0] == token {
+pub fn take(token: &str, tokens: Tokens) -> Possibly<Tokens, ParseError> {
+    if tokens.len() > 0 && tokens[0].value == token {
         Some((&tokens[1..]).to_vec())
     } else {
         None
     }
 }
 
-pub fn parse_touple(tokens: Tokens) -> Option<(Expression, Tokens)> {
+pub fn parse_touple(tokens: Tokens) -> Possibly<(Expression, Tokens), ParseError> {
     if let Some(next_tokens) = take("(", tokens) {
         let mut tokens = next_tokens.clone();
         let mut expressions = Vec::<Expression>::new();
@@ -99,7 +105,7 @@ pub fn parse_touple(tokens: Tokens) -> Option<(Expression, Tokens)> {
     }
 }
 
-pub fn parse_str(token: String) -> Option<String> {
+pub fn parse_str(token: String) -> Possibly<String, ParseError> {
     let mut value = String::new();
 
     for (i, c) in token.chars().enumerate() {
@@ -116,18 +122,18 @@ pub fn parse_str(token: String) -> Option<String> {
     Some(value)
 }
 
-fn take_ident(tokens: Tokens) -> Option<(String, Tokens)> {
+fn take_ident(tokens: Tokens) -> Possibly<(String, Tokens), ParseError> {
     if tokens.len() == 0 {
         None
     } else {
-        match tokens[0].as_str() {
-            "(" | ")" | "{" | "}" | "[" | "]" | "," => None,
-            _ => Some((tokens[0].clone(), (&tokens[1..]).to_vec())),
+        match tokens[0].value.as_str() {
+            "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," => None,
+            _ => Some((tokens[0].value.clone(), (&tokens[1..]).to_vec())),
         }
     }
 }
 
-pub fn parse_func_call(tokens: Tokens) -> Option<(FuncCall, Tokens)> {
+pub fn parse_func_call(tokens: Tokens) -> Possibly<(FuncCall, Tokens), ParseError> {
     if let Some((ident, tokens)) = take_ident(tokens) {
         if let Some((expr, tokens)) = parse_next_expr(tokens) {
             Some((
@@ -145,7 +151,7 @@ pub fn parse_func_call(tokens: Tokens) -> Option<(FuncCall, Tokens)> {
     }
 }
 
-pub fn parse_int(token: String) -> Option<i64> {
+pub fn parse_int(token: String) -> Possibly<i64, ParseError> {
     let mut sum = 0;
     let len = token.len();
 
@@ -161,21 +167,28 @@ pub fn parse_int(token: String) -> Option<i64> {
     Some(sum)
 }
 
-pub fn parse_next_expr(tokens: Tokens) -> Option<(Expression, Tokens)> {
+pub fn parse_next_expr_allow_newline(tokens: Tokens) -> Possibly<(Expression, Tokens), ParseError> {
+    let tokens = skip("\n", tokens);
+    parse_next_expr(tokens)
+}
+
+pub fn parse_next_expr(tokens: Tokens) -> Possibly<(Expression, Tokens), ParseError> {
     if tokens.len() == 0 {
         None
-    } else if let Some((value, tokens)) = parse_assignment(tokens.clone()) {
-        Some((Expression::Assignment(Box::new(value)), tokens))
+    } else if let Some((value, tokens)) = parse_var_decl(tokens.clone()) {
+        Some((Expression::VarDecl(Box::new(value)), tokens))
     } else if let Some((value, tokens)) = parse_reassignment(tokens.clone()) {
         Some((Expression::ReAssignment(Box::new(value)), tokens))
-    } else if let Some(value) = parse_str(tokens[0].clone()) {
+    } else if let Some(value) = parse_str(tokens[0].clone().value) {
         Some((Expression::String(value), (&tokens[1..]).to_vec()))
-    } else if let Some(value) = parse_int(tokens[0].clone()) {
+    } else if let Some(value) = parse_int(tokens[0].clone().value) {
         Some((Expression::Int(value), (&tokens[1..]).to_vec()))
+    } else if let Some((expr, tokens)) = parse_return_expr(tokens.clone()) {
+        Some((Expression::Return(Box::new(expr)), tokens))
+    } else if let Some((value, tokens)) = parse_func_expr(tokens.clone()) {
+        Some((Expression::FuncExpr(value), tokens))
     } else if let Some((value, tokens)) = parse_touple(tokens.clone()) {
         Some((value, tokens))
-    } else if let Some((value, tokens)) = parse_block(tokens.clone()) {
-        Some((Expression::Block(value), tokens))
     } else if let Some((value, tokens)) = parse_func_call(tokens.clone()) {
         Some((Expression::FuncCall(value), tokens))
     } else if let Some((value, tokens)) = take_ident(tokens.clone()) {
@@ -185,7 +198,21 @@ pub fn parse_next_expr(tokens: Tokens) -> Option<(Expression, Tokens)> {
     }
 }
 
-fn digit_to_int(ch: char) -> Option<i64> {
+fn parse_return_expr(tokens: Tokens) -> Possibly<(Expression, Tokens), ParseError> {
+    let tokens = skip("\n", tokens);
+    if let Some(tokens) = take("return", tokens) {
+        let tokens = skip("\n", tokens);
+        if let Some((expr, tokens)) = parse_next_expr(tokens.clone()) {
+            Some((expr, tokens))
+        } else {
+            Some((Expression::Null, tokens))
+        }
+    } else {
+        None
+    }
+}
+
+fn digit_to_int(ch: char) -> Possibly<i64, ParseError> {
     match ch {
         '0' => Some(0),
         '1' => Some(1),
@@ -201,13 +228,59 @@ fn digit_to_int(ch: char) -> Option<i64> {
     }
 }
 
-fn parse_block(tokens: Tokens) -> Option<(Block, Tokens)> {
+fn parse_func_args(tokens: Tokens) -> Possibly<(Vec<String>, Tokens), ParseError> {
+    if let Some(tokens) = take("(", tokens) {
+        let mut tokens = tokens.clone();
+        let mut args = Vec::<String>::new();
+
+        while let Some((ident, next_tokens)) = take_ident(tokens.clone()) {
+            tokens = next_tokens.clone();
+            args.push(ident);
+
+            if let Some(next_tokens) = take(",", tokens.clone()) {
+                tokens = next_tokens;
+            }
+        }
+
+        if let Some(tokens) = take(")", tokens.clone()) {
+            Some((args, tokens.clone()))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn skip(token: &str, tokens: Tokens) -> Tokens {
+    if tokens.len() > 0 && tokens[0].value == token {
+        skip(token, (&tokens[1..]).to_vec())
+    } else {
+        tokens.clone()
+    }
+}
+
+fn parse_func_expr(tokens: Tokens) -> Possibly<(FuncExpr, Tokens), ParseError> {
+    let tokens = skip("\n", tokens.clone());
+
+    let (args, tokens) = match parse_func_args(tokens.clone()) {
+        Possibly::Some((args, tokens)) => (args, tokens),
+        Possibly::None => (Vec::new(), tokens),
+        Possibly::Err(e) => return Possibly::Err(e),
+    };
+
+    let tokens = skip("\n", tokens);
+
     if let Some(tokens) = take("{", tokens) {
+        let tokens = skip("\n", tokens);
         let (expressions, tokens) = parse_expr_list(tokens);
+        let tokens = skip("\n", tokens);
 
         if let Some(tokens) = take("}", tokens) {
+            let tokens = skip("\n", tokens);
             Some((
-                Block {
+                FuncExpr {
+                    args,
                     expressions: expressions.clone(),
                 },
                 tokens,
@@ -224,6 +297,7 @@ fn parse_block(tokens: Tokens) -> Option<(Block, Tokens)> {
 pub mod tests {
     use super::*;
     use crate::lexer::lex;
+    use pretty_assertions_sorted::assert_eq;
 
     #[test]
     pub fn it_can_construct_an_ast() {
@@ -241,7 +315,7 @@ pub mod tests {
 
     #[test]
     pub fn it_can_parse_an_empty_program() {
-        let ast = parse(lex(""));
+        let ast = parse(lex("")).unwrap();
 
         assert_eq!(
             ast,
@@ -260,14 +334,14 @@ pub mod tests {
 
     #[test]
     pub fn it_can_parse_a_string_expression() {
-        let (expression, _tokens) = parse_next_expr(vec![String::from("\"Hello world\"")]).unwrap();
+        let (expression, _tokens) = parse_next_expr(vec![Token::from("\"Hello world\"")]).unwrap();
 
         assert_eq!(expression, Expression::String(String::from("Hello world")));
     }
 
     #[test]
     pub fn it_can_parse_an_int_expression() {
-        let (expression, _tokens) = parse_next_expr(vec![String::from("123")]).unwrap();
+        let (expression, _tokens) = parse_next_expr(vec![Token::from("123")]).unwrap();
 
         assert_eq!(expression, Expression::Int(123));
     }
@@ -275,7 +349,7 @@ pub mod tests {
     #[test]
     pub fn it_can_parse_a_unary_func_call() {
         let (expression, tokens) =
-            parse_next_expr(vec![String::from("foo"), String::from("123")]).unwrap();
+            parse_next_expr(vec![Token::from("foo"), Token::from("123")]).unwrap();
 
         assert_eq!(
             expression,
@@ -285,12 +359,12 @@ pub mod tests {
             })
         );
 
-        assert_eq!(tokens, Vec::<String>::new());
+        assert_eq!(tokens, Vec::<Token>::new());
     }
 
     #[test]
     pub fn it_can_parse_a_program_with_a_func_call() {
-        let ast = parse(lex("print \"Hello world\""));
+        let ast = parse(lex("print \"Hello world\"")).unwrap();
 
         assert_eq!(
             ast,
@@ -305,7 +379,7 @@ pub mod tests {
 
     #[test]
     pub fn it_can_parse_a_program_with_multiple_func_calls() {
-        let ast = parse(lex("print \"Hello world\" print \"Foo bar\""));
+        let ast = parse(lex("print \"Hello world\" print \"Foo bar\"")).unwrap();
 
         assert_eq!(
             ast,
@@ -362,11 +436,11 @@ pub mod tests {
 
     #[test]
     pub fn it_can_parse_assignment() {
-        let (assignment, _tokens) = parse_assignment(lex("let x = 10")).unwrap();
+        let (assignment, _tokens) = parse_var_decl(lex("let x = 10")).unwrap();
 
         assert_eq!(
             assignment,
-            Assignment {
+            VarDecl {
                 ident: String::from("x"),
                 expr: Expression::Int(10),
             }
@@ -396,10 +470,10 @@ pub mod tests {
         "#;
 
         assert_eq!(
-            parse(lex(source)),
+            parse(lex(source)).unwrap(),
             Program {
                 expressions: vec![
-                    Expression::Assignment(Box::new(Assignment {
+                    Expression::VarDecl(Box::new(VarDecl {
                         ident: String::from("x"),
                         expr: Expression::Int(10),
                     })),
@@ -421,10 +495,10 @@ pub mod tests {
         "#;
 
         assert_eq!(
-            parse(lex(source)),
+            parse(lex(source)).unwrap(),
             Program {
                 expressions: vec![
-                    Expression::Assignment(Box::new(Assignment {
+                    Expression::VarDecl(Box::new(VarDecl {
                         ident: String::from("x"),
                         expr: Expression::Int(1),
                     })),
@@ -442,16 +516,17 @@ pub mod tests {
     }
 
     #[test]
-    pub fn you_can_create_a_block() {
+    pub fn you_can_create_a_func_expr() {
         let source = r#"
             {}
         "#;
 
-        let (block, tokens) = parse_block(lex(source)).unwrap();
+        let (func_expr, tokens) = parse_func_expr(lex(source)).unwrap();
 
         assert_eq!(
-            block,
-            Block {
+            func_expr,
+            FuncExpr {
+                args: Vec::new(),
                 expressions: Vec::new(),
             }
         );
@@ -460,18 +535,19 @@ pub mod tests {
     }
 
     #[test]
-    pub fn you_can_create_a_block_with_expressions() {
+    pub fn you_can_create_a_func_expr_with_expressions() {
         let source = r#"
             {
                 print "Hello world"
             }
         "#;
 
-        let (block, tokens) = parse_block(lex(source)).unwrap();
+        let (func_expr, tokens) = parse_func_expr(lex(source)).unwrap();
 
         assert_eq!(
-            block,
-            Block {
+            func_expr,
+            FuncExpr {
+                args: Vec::new(),
                 expressions: vec![Expression::FuncCall(FuncCall {
                     ident: String::from("print"),
                     arg: Box::new(Expression::String(String::from("Hello world"))),
@@ -482,20 +558,68 @@ pub mod tests {
         assert_eq!(tokens, Tokens::new());
     }
 
-    /*
     #[test]
-    pub fn you_can_define_a_function() {
+    pub fn you_can_create_a_func_expr_with_args() {
         let source = r#"
-            fn {}
+            (x, y) { print "Hello world" }
         "#;
 
+        let program = parse(lex(source)).unwrap();
+
         assert_eq!(
-            parse_func(lex(source)),
-            Func {
-                arg: Expression::Null,
-                body: Expression::Block(
+            program,
+            Program {
+                expressions: vec![Expression::FuncExpr(FuncExpr {
+                    args: vec![String::from("x"), String::from("y")],
+                    expressions: vec![Expression::FuncCall(FuncCall {
+                        ident: String::from("print"),
+                        arg: Box::new(Expression::String(String::from("Hello world"))),
+                    })],
+                }),]
             }
-        )
+        );
     }
-    */
+
+    #[test]
+    pub fn it_parses_a_sequence_of_unary_func_calls_with_an_ident_arg_correctly() {
+        let source = r#"
+            print a
+            print b
+        "#;
+
+        let program = parse(lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program {
+                expressions: vec![
+                    Expression::FuncCall(FuncCall {
+                        ident: String::from("print"),
+                        arg: Box::new(Expression::Variable(String::from("a"))),
+                    }),
+                    Expression::FuncCall(FuncCall {
+                        ident: String::from("print"),
+                        arg: Box::new(Expression::Variable(String::from("b"))),
+                    }),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    pub fn it_can_throw_a_syntax_error() {
+        let source = r#"
+            {
+        "#;
+
+        let result = parse(lex(source)).err().unwrap();
+
+        assert_eq!(
+            result,
+            ParseError {
+                message: String::from("Unexpected token '{'"),
+                token: Token::new(String::from("{"), Location::new(2, 13)),
+            }
+        );
+    }
 }

@@ -1,73 +1,99 @@
-pub fn lex(source: &str) -> Vec<String> {
-    let mut tokens = vec![];
-    let mut word = String::new();
-    let mut empty = true;
+use crate::types::{Location, Token};
+use std::cell::RefCell;
+
+pub fn lex(source: &str) -> Vec<Token> {
+    let tokens = RefCell::new(Vec::new());
+    let word = RefCell::new(String::new());
     let mut string = false;
+
+    let line = RefCell::new(1 as usize);
+    let column = RefCell::new(1 as usize);
+
+    let insert = || {
+        if word.borrow().len() == 0 {
+            return;
+        }
+        {
+            tokens.borrow_mut().push(Token::new(
+                word.borrow().clone(),
+                Location::new(line.borrow().clone(), column.borrow().clone()),
+            ));
+        }
+        if *word.borrow() == "\n" {
+            *line.borrow_mut() += 1;
+            column.replace(1);
+        } else {
+            *column.borrow_mut() += word.borrow().len();
+        }
+        word.replace(String::new());
+    };
+
+    let discard = || {
+        *column.borrow_mut() += 1;
+        insert();
+    };
+
+    let add_to_word = |value: char| {
+        word.borrow_mut().push(value);
+    };
 
     for (_i, c) in source.chars().enumerate() {
         if c == '"' {
             if string {
-                word.push(c);
-                tokens.push(word.clone());
-                word = String::new();
-                empty = true;
+                add_to_word(c);
+                insert();
             } else {
-                if !empty {
-                    tokens.push(word.clone());
-                }
-                word = String::new();
-                word.push(c);
-                empty = false;
+                insert();
+                add_to_word(c);
             }
             string = !string;
         } else if string {
-            word.push(c);
+            add_to_word(c);
         } else {
             match c {
-                ' ' | '\n' => {
-                    if !empty {
-                        tokens.push(word.clone());
-                        word = String::new();
-                    }
-                    empty = true;
+                ' ' => {
+                    discard();
                 }
-                '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | '=' => {
-                    if !empty {
-                        tokens.push(word.clone());
-                        word = String::new();
-                    }
-                    tokens.push(c.to_string());
-                    empty = true;
+                '\n' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | '=' => {
+                    insert();
+                    add_to_word(c);
+                    insert();
                 }
                 _ => {
-                    empty = false;
-                    word.push(c);
+                    add_to_word(c);
                 }
             }
         }
     }
 
-    if !empty {
-        tokens.push(word.clone());
-    }
+    insert();
 
-    tokens
+    tokens.take()
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::types::{Location, Token};
+    use pretty_assertions_sorted::assert_eq;
+
+    fn lex_str(source: &str) -> Vec<String> {
+        lex(source)
+            .iter()
+            .map(|token| token.value.clone())
+            .collect()
+    }
 
     #[test]
     pub fn it_can_tokenize_a_word() {
-        let tokens = lex("abc");
+        let tokens = lex_str("abc");
 
         assert_eq!(tokens, vec![String::from("abc")],);
     }
 
     #[test]
     pub fn it_can_split_words() {
-        let tokens = lex("abc def geh");
+        let tokens = lex_str("abc def geh");
 
         assert_eq!(
             tokens,
@@ -81,7 +107,7 @@ pub mod tests {
 
     #[test]
     pub fn it_can_parse_strings() {
-        let tokens = lex("print \"Hello world!\"");
+        let tokens = lex_str("print \"Hello world!\"");
 
         assert_eq!(
             tokens,
@@ -91,7 +117,7 @@ pub mod tests {
 
     #[test]
     pub fn it_can_parse_parens() {
-        let tokens = lex("(){}[]");
+        let tokens = lex_str("(){}[]");
 
         assert_eq!(
             tokens,
@@ -108,7 +134,7 @@ pub mod tests {
 
     #[test]
     pub fn it_can_lex_a_binary_func_call() {
-        let tokens = lex("print(\"Hello\", \"world\")");
+        let tokens = lex_str("print(\"Hello\", \"world\")");
 
         assert_eq!(
             tokens,
@@ -119,6 +145,129 @@ pub mod tests {
                 String::from(","),
                 String::from("\"world\""),
                 String::from(")"),
+            ]
+        );
+    }
+
+    #[test]
+    pub fn it_stores_the_source_location_with_tokens() {
+        let tokens = lex("print(\"Hello\", \"world\")");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token {
+                    value: String::from("print"),
+                    location: Location { line: 1, column: 1 },
+                },
+                Token {
+                    value: String::from("("),
+                    location: Location { line: 1, column: 6 },
+                },
+                Token {
+                    value: String::from("\"Hello\""),
+                    location: Location { line: 1, column: 7 },
+                },
+                Token {
+                    value: String::from(","),
+                    location: Location {
+                        line: 1,
+                        column: 14
+                    },
+                },
+                Token {
+                    value: String::from("\"world\""),
+                    location: Location {
+                        line: 1,
+                        column: 16
+                    },
+                },
+                Token {
+                    value: String::from(")"),
+                    location: Location {
+                        line: 1,
+                        column: 23
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    pub fn it_stores_the_source_location_with_tokens_simpler() {
+        let tokens = lex("(\"Hello\")");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token {
+                    value: String::from("("),
+                    location: Location { line: 1, column: 1 },
+                },
+                Token {
+                    value: String::from("\"Hello\""),
+                    location: Location { line: 1, column: 2 },
+                },
+                Token {
+                    value: String::from(")"),
+                    location: Location { line: 1, column: 9 },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    pub fn it_includes_newline_tokens() {
+        let tokens = lex("print(\"Hello\")\nprint(\"World\")");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token {
+                    value: String::from("print"),
+                    location: Location { line: 1, column: 1 },
+                },
+                Token {
+                    value: String::from("("),
+                    location: Location { line: 1, column: 6 },
+                },
+                Token {
+                    value: String::from("\"Hello\""),
+                    location: Location { line: 1, column: 7 },
+                },
+                Token {
+                    value: String::from(")"),
+                    location: Location {
+                        line: 1,
+                        column: 14
+                    },
+                },
+                Token {
+                    value: String::from("\n"),
+                    location: Location {
+                        line: 1,
+                        column: 15
+                    },
+                },
+                Token {
+                    value: String::from("print"),
+                    location: Location { line: 2, column: 1 },
+                },
+                Token {
+                    value: String::from("("),
+                    location: Location { line: 2, column: 6 },
+                },
+                Token {
+                    value: String::from("\"World\""),
+                    location: Location { line: 2, column: 7 },
+                },
+                Token {
+                    value: String::from(")"),
+                    location: Location {
+                        line: 2,
+                        column: 14
+                    },
+                },
             ]
         );
     }

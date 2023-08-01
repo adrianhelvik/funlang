@@ -1,23 +1,35 @@
 use crate::types::*;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+type Output = Rc<RefCell<String>>;
 
 pub fn eval_program(program: Program) -> String {
-    let mut output = String::new();
-    let mut scope = HashMap::<String, Expression>::new();
+    let output = Rc::new(RefCell::new(String::new()));
+    let scope = Rc::new(Scope::new());
 
     for expr in program.expressions {
-        eval_expr(expr, &mut output, &mut scope, 0);
+        eval_expr(expr, Rc::clone(&output), Rc::clone(&scope));
     }
 
-    return output;
+    return output.take();
 }
 
-pub fn fun_add(expr: Expression) -> i64 {
+fn to_int(expr: Expression) -> i64 {
+    match expr {
+        Expression::Int(int) => int,
+        _ => {
+            panic!("Failed to convert {:#?} to Int", expr);
+        }
+    }
+}
+
+pub fn fun_add(scope: Rc<Scope>, output: Output, expr: Expression) -> i64 {
     match expr {
         Expression::Touple(expressions) => {
             let mut result = 0;
             for expr in expressions {
-                result += fun_add(expr);
+                result += to_int(eval_expr(expr, Rc::clone(&output), Rc::clone(&scope)));
             }
             result
         }
@@ -28,52 +40,37 @@ pub fn fun_add(expr: Expression) -> i64 {
     }
 }
 
-fn lookup(
-    scope: &HashMap<String, Expression>,
-    ident: &str,
-    scope_level: i32,
-) -> Option<Expression> {
-    for i in 0..(scope_level + 1) {
-        let id = format!("{}{}", scope_level - i, ident);
-        if let Some(expression) = scope.get(&id) {
-            return Some(expression.clone());
-        }
-    }
-    None
-}
-
-pub fn eval_expr(
-    expr: Expression,
-    output: &mut String,
-    scope: &mut HashMap<String, Expression>,
-    scope_level: i32,
-) -> Expression {
+pub fn eval_expr(expr: Expression, output: Output, scope: Rc<Scope>) -> Expression {
     match expr {
         Expression::FuncCall(func_call) => {
             if func_call.ident == "print" {
-                let mut inner_output = String::new();
-                let value = eval_expr(*func_call.arg, &mut inner_output, scope, scope_level);
-                let result = expr_to_str(value, &mut inner_output, scope, scope_level);
-                output.push_str(&inner_output);
-                output.push_str(&result);
+                let value = eval_expr(*func_call.arg, Rc::clone(&output), Rc::clone(&scope));
+                let result = expr_to_str(value, Rc::clone(&output), scope);
+                output.borrow_mut().push_str(&result);
                 Expression::Null
             } else if func_call.ident == "println" {
-                let mut inner_output = String::new();
-                let value = eval_expr(*func_call.arg, &mut inner_output, scope, scope_level);
-                let result = expr_to_str(value, &mut inner_output, scope, scope_level);
-                output.push_str(&inner_output);
-                output.push_str(&result);
-                output.push('\n');
+                let value = eval_expr(*func_call.arg, Rc::clone(&output), Rc::clone(&scope));
+                let result = expr_to_str(value, Rc::clone(&output), Rc::clone(&scope));
+                {
+                    let mut output = output.borrow_mut();
+                    output.push_str(&result);
+                    output.push('\n');
+                }
                 Expression::Null
             } else if func_call.ident == "add" {
-                Expression::Int(fun_add(*func_call.arg))
+                Expression::Int(fun_add(scope, output, *func_call.arg))
+            } else if func_call.ident == "ret" || func_call.ident == "return" {
+                Expression::Return(Box::new(eval_expr(
+                    *func_call.arg,
+                    output,
+                    Rc::clone(&scope),
+                )))
             } else {
-                if let Some(expression) = lookup(&scope, &func_call.ident, scope_level) {
-                    if let Expression::Block(block) = expression {
-                        for expr in block.expressions.clone() {
-                            eval_expr(expr, output, scope, scope_level + 1);
-                        }
-                        Expression::Null
+                if let Some(expression) = scope.get(func_call.ident.clone()) {
+                    if let Expression::Closure(closure) = expression {
+                        call_func(closure.func_expr, func_call, output, closure.scope)
+                    } else if let Expression::FuncExpr(func_expr) = expression {
+                        call_func(func_expr, func_call, output, scope)
                     } else {
                         panic!("{:#?} is not callable", expression);
                     }
@@ -85,60 +82,55 @@ pub fn eval_expr(
                 }
             }
         }
-        Expression::Assignment(assignment) => {
-            let value = eval_expr(assignment.expr, output, scope, scope_level);
-            let id = format!("{}{}", scope_level, assignment.ident);
+        Expression::VarDecl(assignment) => {
+            let value = eval_expr(assignment.expr, output, Rc::clone(&scope));
 
-            scope.insert(id, value.clone());
+            scope.assign(assignment.ident, value.clone());
 
             value
         }
-        Expression::ReAssignment(assignment) => {
-            let value = eval_expr(assignment.expr, output, scope, scope_level);
-            for i in 0..(scope_level + 1) {
-                let id = format!("{}{}", scope_level - i, assignment.ident);
-                if scope.contains_key(&id) {
-                    scope.insert(id, value.clone());
-                    return value;
-                }
+        Expression::ReAssignment(assignment) => match scope.get(assignment.ident.clone()) {
+            Some(_) => scope.set(
+                assignment.ident,
+                eval_expr(assignment.expr, output, Rc::clone(&scope)),
+            ),
+            None => {
+                panic!(
+                    "Attempted to assign to undefined variable {}",
+                    assignment.ident
+                );
             }
-            panic!(
-                "Attempted to assign to undefined variable {}",
-                assignment.ident
-            );
-        }
+        },
         Expression::String(string) => Expression::String(string),
         Expression::Touple(value) => Expression::Touple(value),
         Expression::Int(value) => Expression::Int(value),
         Expression::Variable(ident) => {
-            if let Some(value) = lookup(&scope, &ident, scope_level) {
+            if let Some(value) = scope.get(ident) {
                 return value.clone();
             }
             Expression::Null
         }
-        Expression::Block(block) => Expression::Block(block),
+        Expression::FuncExpr(func_expr) => {
+            Expression::Closure(Box::new(Closure {
+                func_expr,
+                scope: Rc::clone(&scope)
+            }))
+        }
         _ => {
             panic!("Failed to eval expression {:?}", expr);
         }
     }
 }
 
-pub fn expr_to_str(
-    expr: Expression,
-    output: &mut String,
-    scope: &mut HashMap<String, Expression>,
-    scope_level: i32,
-) -> String {
+pub fn expr_to_str(expr: Expression, output: Output, scope: Rc<Scope>) -> String {
     match expr {
         Expression::String(string) => string,
         Expression::Int(int) => int.to_string(),
         Expression::Touple(value) => {
             let mut result = String::new();
             for expr in value {
-                let mut inner_output = String::new();
-                let item = eval_expr(expr, &mut inner_output, scope, scope_level);
-                output.push_str(&inner_output);
-                result.push_str(&expr_to_str(item, output, scope, scope_level));
+                let item = eval_expr(expr, Rc::clone(&output), Rc::clone(&scope));
+                result.push_str(&expr_to_str(item, Rc::clone(&output), Rc::clone(&scope)));
             }
             result
         }
@@ -146,5 +138,82 @@ pub fn expr_to_str(
         _ => {
             panic!("Failed to stringify expression {:#?}", expr);
         }
+    }
+}
+
+fn call_func(func_expr: FuncExpr, func_call: FuncCall, output: Output, scope: Rc<Scope>) -> Expression {
+    let child_scope = RefCell::new(Rc::new(Scope::create(scope)));
+    match *func_call.arg {
+        Expression::Touple(args) => {
+            for (i, arg) in args.iter().enumerate() {
+                let ident = func_expr.args[i].clone();
+                child_scope.borrow().assign(
+                    ident,
+                    eval_expr(
+                        arg.clone(),
+                        Rc::clone(&output),
+                        Rc::clone(&child_scope.borrow()),
+                    ),
+                );
+            }
+        }
+        _ => {
+            if func_expr.args.len() >= 1 {
+                let ident = func_expr.args[0].clone();
+                child_scope.borrow().assign(
+                    ident,
+                    eval_expr(
+                        *func_call.arg,
+                        Rc::clone(&output),
+                        Rc::clone(&child_scope.borrow()),
+                    ),
+                );
+            }
+        }
+    }
+    for expr in func_expr.expressions.clone() {
+        match expr {
+            Expression::Return(expr) => {
+                return eval_expr(
+                    *expr,
+                    output,
+                    Rc::clone(&*child_scope.borrow()),
+                    );
+            }
+            _ => {
+                let scope = Rc::clone(&child_scope.borrow());
+                eval_expr(expr, Rc::clone(&output), scope);
+            }
+        }
+    }
+    Expression::Null
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    pub fn you_can_update_a_variable() {
+        let program = Program {
+            expressions: vec![
+                Expression::VarDecl(Box::new(VarDecl {
+                    expr: Expression::Int(1),
+                    ident: String::from("x"),
+                })),
+                Expression::ReAssignment(Box::new(ReAssignment {
+                    expr: Expression::Int(2),
+                    ident: String::from("x"),
+                })),
+                Expression::FuncCall(FuncCall {
+                    ident: String::from("println"),
+                    arg: Box::new(Expression::Variable(String::from("x"))),
+                }),
+            ],
+        };
+
+        let result = eval_program(program);
+
+        assert_eq!(result, "2\n");
     }
 }
