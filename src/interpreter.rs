@@ -25,7 +25,7 @@ fn to_int(expr: Expression) -> i64 {
 }
 
 pub fn fun_add(scope: Rc<Scope>, output: Output, expr: Expression) -> i64 {
-    match expr {
+    match eval_expr(expr.clone(), Rc::clone(&output), Rc::clone(&scope)) {
         Expression::Touple(expressions) => {
             let mut result = 0;
             for expr in expressions {
