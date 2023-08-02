@@ -1,18 +1,14 @@
 use crate::types::*;
+use std::io::Write;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-type Output = Rc<RefCell<String>>;
-
-pub fn eval_program(program: Program) -> String {
-    let output = Rc::new(RefCell::new(String::new()));
+pub fn eval_program<W: Write>(program: Program, output: Rc<RefCell<W>>) {
     let scope = Rc::new(Scope::new());
 
     for expr in program.expressions {
         eval_expr(expr, Rc::clone(&output), Rc::clone(&scope));
     }
-
-    return output.take();
 }
 
 fn to_int(expr: Expression) -> i64 {
@@ -24,7 +20,7 @@ fn to_int(expr: Expression) -> i64 {
     }
 }
 
-pub fn fun_add(scope: Rc<Scope>, output: Output, expr: Expression) -> i64 {
+pub fn fun_add<W: Write>(scope: Rc<Scope>, output: Rc<RefCell<W>>, expr: Expression) -> i64 {
     match eval_expr(expr.clone(), Rc::clone(&output), Rc::clone(&scope)) {
         Expression::Touple(expressions) => {
             let mut result = 0;
@@ -40,22 +36,18 @@ pub fn fun_add(scope: Rc<Scope>, output: Output, expr: Expression) -> i64 {
     }
 }
 
-pub fn eval_expr(expr: Expression, output: Output, scope: Rc<Scope>) -> Expression {
+pub fn eval_expr<W: Write>(expr: Expression, output: Rc<RefCell<W>>, scope: Rc<Scope>) -> Expression {
     match expr {
         Expression::FuncCall(func_call) => {
             if func_call.ident == "print" {
                 let value = eval_expr(*func_call.arg, Rc::clone(&output), Rc::clone(&scope));
                 let result = expr_to_str(value, Rc::clone(&output), scope);
-                output.borrow_mut().push_str(&result);
+                write!(output.borrow_mut(), "{}", &result).unwrap();
                 Expression::Null
             } else if func_call.ident == "println" {
                 let value = eval_expr(*func_call.arg, Rc::clone(&output), Rc::clone(&scope));
                 let result = expr_to_str(value, Rc::clone(&output), Rc::clone(&scope));
-                {
-                    let mut output = output.borrow_mut();
-                    output.push_str(&result);
-                    output.push('\n');
-                }
+                writeln!(output.borrow_mut(), "{}", &result).unwrap();
                 Expression::Null
             } else if func_call.ident == "add" {
                 Expression::Int(fun_add(scope, output, *func_call.arg))
@@ -110,19 +102,17 @@ pub fn eval_expr(expr: Expression, output: Output, scope: Rc<Scope>) -> Expressi
             }
             Expression::Null
         }
-        Expression::FuncExpr(func_expr) => {
-            Expression::Closure(Box::new(Closure {
-                func_expr,
-                scope: Rc::clone(&scope)
-            }))
-        }
+        Expression::FuncExpr(func_expr) => Expression::Closure(Box::new(Closure {
+            func_expr,
+            scope: Rc::clone(&scope),
+        })),
         _ => {
             panic!("Failed to eval expression {:?}", expr);
         }
     }
 }
 
-pub fn expr_to_str(expr: Expression, output: Output, scope: Rc<Scope>) -> String {
+pub fn expr_to_str<W: Write>(expr: Expression, output: Rc<RefCell<W>>, scope: Rc<Scope>) -> String {
     match expr {
         Expression::String(string) => string,
         Expression::Int(int) => int.to_string(),
@@ -141,7 +131,12 @@ pub fn expr_to_str(expr: Expression, output: Output, scope: Rc<Scope>) -> String
     }
 }
 
-fn call_func(func_expr: FuncExpr, func_call: FuncCall, output: Output, scope: Rc<Scope>) -> Expression {
+fn call_func<W: Write>(
+    func_expr: FuncExpr,
+    func_call: FuncCall,
+    output: Rc<RefCell<W>>,
+    scope: Rc<Scope>,
+) -> Expression {
     let child_scope = RefCell::new(Rc::new(Scope::create(scope)));
     match *func_call.arg {
         Expression::Touple(args) => {
@@ -174,11 +169,7 @@ fn call_func(func_expr: FuncExpr, func_call: FuncCall, output: Output, scope: Rc
     for expr in func_expr.expressions.clone() {
         match expr {
             Expression::Return(expr) => {
-                return eval_expr(
-                    *expr,
-                    output,
-                    Rc::clone(&*child_scope.borrow()),
-                    );
+                return eval_expr(*expr, output, Rc::clone(&*child_scope.borrow()));
             }
             _ => {
                 let scope = Rc::clone(&child_scope.borrow());
@@ -212,8 +203,11 @@ mod tests {
             ],
         };
 
-        let result = eval_program(program);
+        let output = Rc::new(RefCell::new(Vec::new()));
 
-        assert_eq!(result, "2\n");
+        eval_program(program, Rc::clone(&output));
+        let output = output.borrow().clone();
+
+        assert_eq!(String::from_utf8(output).unwrap(), "2\n");
     }
 }

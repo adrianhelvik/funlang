@@ -5,25 +5,40 @@ pub mod types;
 
 use lexer::lex;
 use parser::parse;
+use std::cell::RefCell;
 use std::env;
 use std::fs;
+use std::rc::Rc;
 use types::*;
 
-pub fn eval(source: &str) -> Result<String, SyntaxError> {
+pub fn eval(source: &str) -> Result<(), SyntaxError> {
+    // let stdout: RefCell<Box<dyn Write>> = RefCell::new(Box::new(std::io::stdout()));
+    // let stderr: RefCell<Box<dyn Write>> = RefCell::new(Box::new(std::io::stderr()));
+
     let tokens = lex(source);
     match parse(tokens) {
-        Ok(program) => Ok(interpreter::eval_program(program)),
+        Ok(program) => {
+            let output = Rc::new(RefCell::new(std::io::stdout()));
+            interpreter::eval_program(program, Rc::clone(&output));
+            Ok(())
+        }
         Err(err) => Err(SyntaxError::generate(err, source.to_string())),
     }
 }
 
-pub fn eval_or_panic(source: &str) -> String {
-    match eval(source) {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("{}", err.message);
-            std::process::exit(1);
-        }
+pub fn test_eval(source: &str) -> String {
+    let output = Rc::new(RefCell::new(Vec::new()));
+    let tokens = lex(source);
+    let program = parse(tokens).unwrap();
+    interpreter::eval_program(program, Rc::clone(&output));
+    let output = output.borrow();
+    String::from_utf8(output.to_vec()).unwrap()
+}
+
+pub fn eval_or_panic(source: &str) {
+    if let Err(err) = eval(source) {
+        eprintln!("{}", err.message);
+        std::process::exit(1);
     }
 }
 
@@ -36,7 +51,7 @@ pub fn main() {
 
     let contents = fs::read_to_string(filename).expect("Failed to read file");
 
-    println!("{}", eval_or_panic(&contents));
+    eval_or_panic(&contents);
 }
 
 #[cfg(test)]
@@ -55,7 +70,7 @@ pub mod tests {
             print "Hello world"
         "#;
 
-        assert_eq!(eval_or_panic(source), "Hello world");
+        assert_eq!(test_eval(source), "Hello world");
     }
 
     #[test]
@@ -64,7 +79,7 @@ pub mod tests {
             print add(105, 20)
         "#;
 
-        assert_eq!(eval_or_panic(source), "125");
+        assert_eq!(test_eval(source), "125");
     }
 
     #[test]
@@ -74,7 +89,7 @@ pub mod tests {
             print x
         "#;
 
-        assert_eq!(eval_or_panic(source), "10");
+        assert_eq!(test_eval(source), "10");
     }
 
     #[test]
@@ -85,7 +100,7 @@ pub mod tests {
             }
         "#;
 
-        assert_eq!(eval_or_panic(source), "");
+        assert_eq!(test_eval(source), "");
     }
 
     #[test]
@@ -96,7 +111,7 @@ pub mod tests {
             }
             block()
         "#;
-        assert_eq!(eval_or_panic(source), "Hello world\n");
+        assert_eq!(test_eval(source), "Hello world\n");
     }
 
     #[test]
@@ -112,7 +127,7 @@ pub mod tests {
             print x
         "#;
 
-        assert_eq!(eval_or_panic(source), "inner outer");
+        assert_eq!(test_eval(source), "inner outer");
     }
 
     #[test]
@@ -126,7 +141,7 @@ pub mod tests {
             print x
         "#;
 
-        assert_eq!(eval_or_panic(source), "inner");
+        assert_eq!(test_eval(source), "inner");
     }
 
     #[test]
@@ -137,7 +152,7 @@ pub mod tests {
             print add(x, y)
         "#;
 
-        assert_eq!(eval_or_panic(source), "3");
+        assert_eq!(test_eval(source), "3");
     }
 
     #[test]
@@ -146,7 +161,7 @@ pub mod tests {
             print add(add(1, 2), 3)
         "#;
 
-        assert_eq!(eval_or_panic(source), "6");
+        assert_eq!(test_eval(source), "6");
     }
 
     //#[test]
@@ -160,7 +175,7 @@ pub mod tests {
 
         println!("{:?}", lax(source));
 
-        assert_eq!(eval_or_panic(source), "1");
+        assert_eq!(test_eval(source), "1");
     }
 
     //#[test]
@@ -172,12 +187,12 @@ pub mod tests {
             print my_add(1, 2)
         "#;
 
-        assert_eq!(eval_or_panic(source), "3");
+        assert_eq!(test_eval(source), "3");
     }
 
     //#[test]
     pub fn you_can_call_a_func_with_args() {
-        assert_eq!(eval_or_panic("print add(1, 2)"), "3");
+        assert_eq!(test_eval("print add(1, 2)"), "3");
         let source = r#"
             let random_func = (a, b) {
                 return add(add(a, b), 10)
@@ -185,7 +200,7 @@ pub mod tests {
             print random_func(1, 2)
         "#;
 
-        assert_eq!(eval_or_panic(source), "13");
+        assert_eq!(test_eval(source), "13");
     }
 
     #[test]
@@ -195,7 +210,7 @@ pub mod tests {
             print f()
         "#;
 
-        assert_eq!(eval_or_panic(source), "1");
+        assert_eq!(test_eval(source), "1");
     }
 
     #[test]
@@ -205,7 +220,7 @@ pub mod tests {
             f 1
         "#;
 
-        assert_eq!(eval_or_panic(source), "1");
+        assert_eq!(test_eval(source), "1");
     }
 
     #[test]
@@ -218,7 +233,7 @@ pub mod tests {
             f(1, 2)
         "#;
 
-        assert_eq!(eval_or_panic(source), "12");
+        assert_eq!(test_eval(source), "12");
     }
 
     #[test]
@@ -241,7 +256,7 @@ pub mod tests {
             p()
         "#;
 
-        assert_eq!(eval_or_panic(source), "Hello world\n");
+        assert_eq!(test_eval(source), "Hello world\n");
     }
 
     #[test]
@@ -258,6 +273,6 @@ pub mod tests {
             p()
         "#;
 
-        assert_eq!(eval_or_panic(source), "Hello world\nHello world\n");
+        assert_eq!(test_eval(source), "Hello world\nHello world\n");
     }
 }
