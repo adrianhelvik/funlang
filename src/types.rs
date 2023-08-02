@@ -1,3 +1,5 @@
+use colorful::Color;
+use colorful::Colorful;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -7,10 +9,31 @@ pub struct Program {
     pub expressions: Vec<Expression>,
 }
 
+impl Program {
+    pub fn new(expressions: Vec<Expression>) -> Self {
+        Program { expressions }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncCall {
-    pub ident: String,
+    pub ident: Variable,
     pub arg: Box<Expression>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variable {
+    pub ident: String,
+    pub loc: Loc,
+}
+
+impl Variable {
+    pub fn new(token: Token) -> Self {
+        Variable {
+            ident: token.value,
+            loc: token.loc,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,11 +44,20 @@ pub enum Expression {
     Touple(Vec<Expression>),
     VarDecl(Box<VarDecl>),
     ReAssignment(Box<ReAssignment>),
-    Variable(String),
+    Variable(Variable),
     FuncExpr(FuncExpr),
     Null,
     Return(Box<Expression>),
     Closure(Box<Closure>),
+    IfExpr(Box<IfExpr>),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfExpr {
+    pub condition: Expression,
+    pub then_expr: Expression,
+    pub else_expr: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,42 +159,42 @@ impl Scope {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Location {
+pub struct Loc {
     pub line: usize,
     pub column: usize,
 }
 
-impl Location {
+impl Loc {
     pub fn new(line: usize, column: usize) -> Self {
-        Location { line, column }
+        Loc { line, column }
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Token {
     pub value: String,
-    pub location: Location,
+    pub loc: Loc,
 }
 
 impl Token {
-    pub fn from(value: &str) -> Self {
+    pub fn from(value: &str, loc: Loc) -> Self {
         Token {
             value: value.to_string(),
-            location: Location { line: 0, column: 0 },
+            loc,
         }
     }
 
-    pub fn new(value: String, location: Location) -> Self {
-        Token { value, location }
+    pub fn new(value: String, loc: Loc) -> Self {
+        Token { value, loc }
     }
 }
 
 pub type Tokens = Vec<Token>;
 
-#[derive(Debug, PartialEq)]
-pub struct ParseError {
+#[derive(Debug, PartialEq, Clone)]
+pub struct LocError {
     pub message: String,
-    pub token: Token,
+    pub loc: Loc,
 }
 
 #[derive(Debug, PartialEq)]
@@ -181,20 +213,29 @@ impl SyntaxError {
         }
     }
 
-    pub fn generate(err: ParseError, source: String) -> Self {
+    pub fn generate(err: LocError, source: String) -> Self {
         let mut lines = source.split("\n");
-        let line = lines.nth(err.token.location.line - 1).unwrap();
+        let colored_prefix = "Error:".to_string();
+        let uncolored_prefix = " ".to_string();
+        let line = lines.nth(err.loc.line - 1).unwrap();
         let mut message_line = String::new();
-        for _ in 0..(err.token.location.column - 1) {
+        for _ in 0..(err.loc.column - 1 + colored_prefix.len() + uncolored_prefix.len()) {
             message_line.push(' ');
         }
         message_line += format!(
-            "^ [{}:{}] ",
-            err.token.location.line, err.token.location.column
+            "{}",
+            format!("^ [{}:{}] ", err.loc.line, err.loc.column).color(Color::Cyan)
         )
         .as_str();
         SyntaxError {
-            message: format!("{}\n{}{}", line, message_line, err.message),
+            message: format!(
+                "{}{}{}\n{}{}",
+                colored_prefix.white().bg_red(),
+                uncolored_prefix,
+                line.bold(),
+                message_line,
+                err.message.gradient(Color::Red)
+            ),
         }
     }
 }

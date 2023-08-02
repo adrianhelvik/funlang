@@ -7,3 +7,6 @@ edition = "2021"
 
 [dev-dependencies]
 pretty_assertions_sorted = "1.2.3"
+
+[dependencies]
+colorful = "0.2.2"

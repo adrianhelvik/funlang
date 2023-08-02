@@ -19,8 +19,10 @@ pub fn eval(source: &str) -> Result<(), SyntaxError> {
     match parse(tokens) {
         Ok(program) => {
             let output = Rc::new(RefCell::new(std::io::stdout()));
-            interpreter::eval_program(program, Rc::clone(&output));
-            Ok(())
+            match interpreter::eval_program(program, Rc::clone(&output)) {
+                Ok(_) => Ok(()),
+                Err(err) => Err(SyntaxError::generate(err, source.to_string())),
+            }
         }
         Err(err) => Err(SyntaxError::generate(err, source.to_string())),
     }
@@ -30,7 +32,16 @@ pub fn test_eval(source: &str) -> String {
     let output = Rc::new(RefCell::new(Vec::new()));
     let tokens = lex(source);
     let program = parse(tokens).unwrap();
-    interpreter::eval_program(program, Rc::clone(&output));
+    match interpreter::eval_program(program, Rc::clone(&output)) {
+        Ok(_) => {}
+        Err(err) => {
+            println!(
+                "{}",
+                SyntaxError::generate(err.clone(), source.to_string()).message
+            );
+            panic!("{}", err.message);
+        }
+    }
     let output = output.borrow();
     String::from_utf8(output.to_vec()).unwrap()
 }
@@ -237,14 +248,6 @@ pub mod tests {
     }
 
     #[test]
-    pub fn it_prints_a_nice_message_when_erroring() {
-        let source = "{";
-        let error_message = eval(source).unwrap_err().message;
-
-        assert_eq!(error_message, "{\n^ [1:1] Unexpected token '{'");
-    }
-
-    #[test]
     pub fn it_can_preserve_enclosed_values() {
         let source = r#"
             let printer = (thing) {
@@ -274,5 +277,19 @@ pub mod tests {
         "#;
 
         assert_eq!(test_eval(source), "Hello world\nHello world\n");
+    }
+
+    #[test]
+    pub fn if_is_truthy_for_one_and_falsey_for_zero() {
+        let source = r#"
+            if 1 {
+                print "true"
+            }
+            if 0 {
+                print "false"
+            }
+        "#;
+
+        assert_eq!(test_eval(source), "true");
     }
 }

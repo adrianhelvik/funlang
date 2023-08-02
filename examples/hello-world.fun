@@ -30,3 +30,7 @@ println("We can increment it to ", count = add(count, 1))
 println("We can increment it to ", count = add(count, 1))
 println("We can increment it to ", count = add(count, 1))
 println("We can increment it to ", count = add(count, 1))
+
+if 1 {
+  println "One is truthy!"
+}

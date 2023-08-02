@@ -1,4 +1,4 @@
-use crate::types::{Location, Token};
+use crate::types::{Loc, Token};
 use std::cell::RefCell;
 
 pub fn lex(source: &str) -> Vec<Token> {
@@ -16,7 +16,7 @@ pub fn lex(source: &str) -> Vec<Token> {
         {
             tokens.borrow_mut().push(Token::new(
                 word.borrow().clone(),
-                Location::new(line.borrow().clone(), column.borrow().clone()),
+                Loc::new(line.borrow().clone(), column.borrow().clone()),
             ));
         }
         if *word.borrow() == "\n" {
@@ -26,11 +26,6 @@ pub fn lex(source: &str) -> Vec<Token> {
             *column.borrow_mut() += word.borrow().len();
         }
         word.replace(String::new());
-    };
-
-    let discard = || {
-        *column.borrow_mut() += 1;
-        insert();
     };
 
     let add_to_word = |value: char| {
@@ -52,7 +47,8 @@ pub fn lex(source: &str) -> Vec<Token> {
         } else {
             match c {
                 ' ' => {
-                    discard();
+                    insert();
+                    *column.borrow_mut() += 1;
                 }
                 '\n' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | '=' => {
                     insert();
@@ -74,7 +70,7 @@ pub fn lex(source: &str) -> Vec<Token> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::types::{Location, Token};
+    use crate::types::{Loc, Token};
     use pretty_assertions_sorted::assert_eq;
 
     fn lex_str(source: &str) -> Vec<String> {
@@ -150,7 +146,7 @@ pub mod tests {
     }
 
     #[test]
-    pub fn it_stores_the_source_location_with_tokens() {
+    pub fn it_stores_the_source_loc_with_tokens() {
         let tokens = lex("print(\"Hello\", \"world\")");
 
         assert_eq!(
@@ -158,33 +154,33 @@ pub mod tests {
             vec![
                 Token {
                     value: String::from("print"),
-                    location: Location { line: 1, column: 1 },
+                    loc: Loc { line: 1, column: 1 },
                 },
                 Token {
                     value: String::from("("),
-                    location: Location { line: 1, column: 6 },
+                    loc: Loc { line: 1, column: 6 },
                 },
                 Token {
                     value: String::from("\"Hello\""),
-                    location: Location { line: 1, column: 7 },
+                    loc: Loc { line: 1, column: 7 },
                 },
                 Token {
                     value: String::from(","),
-                    location: Location {
+                    loc: Loc {
                         line: 1,
                         column: 14
                     },
                 },
                 Token {
                     value: String::from("\"world\""),
-                    location: Location {
+                    loc: Loc {
                         line: 1,
                         column: 16
                     },
                 },
                 Token {
                     value: String::from(")"),
-                    location: Location {
+                    loc: Loc {
                         line: 1,
                         column: 23
                     },
@@ -194,7 +190,7 @@ pub mod tests {
     }
 
     #[test]
-    pub fn it_stores_the_source_location_with_tokens_simpler() {
+    pub fn it_stores_the_source_loc_with_tokens_simpler() {
         let tokens = lex("(\"Hello\")");
 
         assert_eq!(
@@ -202,15 +198,15 @@ pub mod tests {
             vec![
                 Token {
                     value: String::from("("),
-                    location: Location { line: 1, column: 1 },
+                    loc: Loc { line: 1, column: 1 },
                 },
                 Token {
                     value: String::from("\"Hello\""),
-                    location: Location { line: 1, column: 2 },
+                    loc: Loc { line: 1, column: 2 },
                 },
                 Token {
                     value: String::from(")"),
-                    location: Location { line: 1, column: 9 },
+                    loc: Loc { line: 1, column: 9 },
                 },
             ]
         );
@@ -225,45 +221,45 @@ pub mod tests {
             vec![
                 Token {
                     value: String::from("print"),
-                    location: Location { line: 1, column: 1 },
+                    loc: Loc { line: 1, column: 1 },
                 },
                 Token {
                     value: String::from("("),
-                    location: Location { line: 1, column: 6 },
+                    loc: Loc { line: 1, column: 6 },
                 },
                 Token {
                     value: String::from("\"Hello\""),
-                    location: Location { line: 1, column: 7 },
+                    loc: Loc { line: 1, column: 7 },
                 },
                 Token {
                     value: String::from(")"),
-                    location: Location {
+                    loc: Loc {
                         line: 1,
                         column: 14
                     },
                 },
                 Token {
                     value: String::from("\n"),
-                    location: Location {
+                    loc: Loc {
                         line: 1,
                         column: 15
                     },
                 },
                 Token {
                     value: String::from("print"),
-                    location: Location { line: 2, column: 1 },
+                    loc: Loc { line: 2, column: 1 },
                 },
                 Token {
                     value: String::from("("),
-                    location: Location { line: 2, column: 6 },
+                    loc: Loc { line: 2, column: 6 },
                 },
                 Token {
                     value: String::from("\"World\""),
-                    location: Location { line: 2, column: 7 },
+                    loc: Loc { line: 2, column: 7 },
                 },
                 Token {
                     value: String::from(")"),
-                    location: Location {
+                    loc: Loc {
                         line: 2,
                         column: 14
                     },
