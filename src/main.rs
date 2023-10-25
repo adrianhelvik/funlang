@@ -292,4 +292,96 @@ pub mod tests {
 
         assert_eq!(test_eval(source), "true");
     }
+
+    #[test]
+    pub fn less_than_can_be_true() {
+        let source = r#"
+            print less_than(1, 2)
+        "#;
+
+        assert_eq!(test_eval(source), "true");
+    }
+
+    #[test]
+    pub fn less_than_can_be_false() {
+        let source = r#"
+            print less_than(2, 2)
+        "#;
+
+        assert_eq!(test_eval(source), "false");
+    }
+
+    #[test]
+    pub fn less_than_with_variables() {
+        let source = r#"
+            let first = 100
+            let second = 1
+            print less_than(first, second)
+        "#;
+
+        assert_eq!(test_eval(source), "false");
+    }
+
+    #[test]
+    pub fn less_than_with_variables2() {
+        let source = r#"
+            let first = 1
+            let second = 100
+            print less_than(first, second)
+        "#;
+
+        assert_eq!(test_eval(source), "true");
+    }
+
+    #[test]
+    pub fn you_can_define_a_new_variable_within_func_based_on_another() {
+        let source = r#"
+            let i = 0
+            let func = {
+                let j = add(i, 1)
+                print j
+            }
+            func()
+        "#;
+
+        assert_eq!(test_eval(source), "1");
+    }
+
+    #[test]
+    pub fn reassignment_in_func() {
+        let source = r#"
+            let i = 0
+            let func = {
+                i = add(i, 1)
+                print i
+            }
+            func()
+        "#;
+
+        assert_eq!(test_eval(source), "1");
+    }
+
+    #[test]
+    pub fn exploratory_recursion() {
+        let source = r#"
+            let func = (n) {
+                ret n
+            }
+            println func 1
+        "#;
+
+        assert_eq!(test_eval(source), "1");
+    }
+
+    #[test]
+    pub fn exploratory_recursion2() {
+        let source = r#"
+            let sum_below = (n) {
+                ret add(n, sum_below(sub(n, 1)))
+            }
+            println sum_below 3
+        "#;
+
+        assert_eq!(test_eval(source), "6");
+    }
 }

@@ -91,24 +91,24 @@ pub struct FuncExpr {
     pub expressions: Vec<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Scope {
     pub values: Box<RefCell<HashMap<String, Expression>>>,
-    pub parent: RefCell<Option<Rc<Scope>>>,
+    pub parent: Option<RefCell<Rc<Scope>>>,
 }
 
 impl Scope {
     pub fn new() -> Self {
         Scope {
             values: Box::new(RefCell::new(HashMap::new())),
-            parent: RefCell::new(None),
+            parent: None,
         }
     }
 
     pub fn create(parent: Rc<Scope>) -> Self {
         Scope {
             values: Box::new(RefCell::new(HashMap::new())),
-            parent: RefCell::new(Some(parent)),
+            parent: Some(RefCell::new(parent)),
         }
     }
 
@@ -119,7 +119,7 @@ impl Scope {
         expr
     }
 
-    pub fn set(&self, ident: String, expr: Expression) -> Expression {
+    pub fn set(&self, ident: String, expr: Expression) -> Result<Expression, LocError> {
         let val = {
             let values = self.values.borrow();
             values.get(&ident).cloned()
@@ -129,14 +129,17 @@ impl Scope {
                 self.values
                     .borrow_mut()
                     .insert(ident.to_string(), expr.clone());
-                expr
+                Ok(expr)
             }
-            None => match self.parent.take() {
-                Some(parent) => parent.set(ident, expr),
-                None => {
-                    panic!("Attempted to assign to undefined variable {}", ident);
-                }
-            },
+            None => {
+                let s1 = format!(
+                    "Attempted to assign to undefined variable {}",
+                    ident.clone()
+                );
+                let s = s1.as_str();
+                let parent = self.parent.as_ref().expect(s).borrow();
+                parent.set(ident, expr)
+            }
         }
     }
 
@@ -148,12 +151,22 @@ impl Scope {
         match self.values.borrow().get(&ident) {
             Some(expr) => Some(expr.clone()),
             None => {
-                let parent = self.parent.borrow();
-                match parent.as_ref() {
-                    Some(parent) => parent.get(ident),
-                    None => None,
-                }
+                let parent = self.parent.as_ref()?.borrow();
+                parent.get(ident).clone()
             }
+        }
+    }
+
+    pub fn debug(&self) {
+        println!("<scope debug>");
+        self.do_debug();
+        println!("</scope debug>");
+    }
+
+    fn do_debug(&self) {
+        println!("{:?}", self.values.borrow().keys());
+        if self.parent != None {
+            self.parent.clone().unwrap().borrow().do_debug();
         }
     }
 }

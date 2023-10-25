@@ -579,10 +579,6 @@ fn parse_return_expr(state: State) -> Possibly<(Expression, State), LocError> {
     }
 }
 
-fn peek(expected: &str, state: &State) -> bool {
-    state.len() > 0 && state.first().value == expected
-}
-
 fn digit_to_int(ch: char) -> Possibly<i64, LocError> {
     match ch {
         '0' => Some(0),

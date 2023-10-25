@@ -10,8 +10,6 @@ let x = 10
 
 println("The number is: ", x)
 
-println("The message outside print_message is: ", message)
-
 let print_message = {
   let message = "Hello world"
 
@@ -19,8 +17,6 @@ let print_message = {
 }
 
 print_message()
-
-println("The message outside print_message is: ", message)
 
 let count = 0
 
@@ -33,4 +29,8 @@ println("We can increment it to ", count = add(count, 1))
 
 if 1 {
   println "One is truthy!"
+}
+
+if 0 {
+  println "Zero is not truthy!"
 }

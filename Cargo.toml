@@ -9,4 +9,5 @@ edition = "2021"
 pretty_assertions_sorted = "1.2.3"
 
 [dependencies]
+anyhow = "1.0.75"
 colorful = "0.2.2"
