@@ -1,0 +1,16 @@
+Program: Expression*;
+Expression: I32 | I64 | F32 | F64 | Boolean | LabelledExpression | VariableDeclaration | FunctionExpression | MatchExpression;
+I32: [1-9][0-9]*(i32)?;
+I64: [1-9][0-9]*i64;
+F32: ([1-9][0-9]*|0)\.[0-9]+;
+F64: ([1-9][0-9]*|0)\.[0-9]+f64;
+Boolean: ("true"|"false");
+LabelledExpression: Ident ":" Expression;
+VariableDeclaration: "let" ident = expression;
+FunctionExpression: "fn" FunctionArgument* "{" Expression* "}";
+MatchExpression: "match" (Expression)? "{" (Expression "->" "{" Expression* "}")+ "}";
+
+// Example String: "Hello {name.reverse()}! This is some CSS: .foo \{ color: red; \}"
+String: "\"" (StringPart | StringExpression)* "\"";
+StringPart: ~"\\\"\\{\\}" ~"\\\"\\{\\}"*;
+StringExpression: "\\{" Expression "\\}";

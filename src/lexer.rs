@@ -32,7 +32,20 @@ pub fn lex(source: &str) -> Vec<Token> {
         word.borrow_mut().push(value);
     };
 
+    let mut in_dot = false;
+
     for (_i, c) in source.chars().enumerate() {
+        if in_dot {
+            if c == '.' {
+                add_to_word(c);
+                insert();
+                continue;
+            } else {
+                insert();
+            }
+            in_dot = false;
+        }
+
         if c == '"' {
             if string {
                 add_to_word(c);
@@ -46,6 +59,11 @@ pub fn lex(source: &str) -> Vec<Token> {
             add_to_word(c);
         } else {
             match c {
+                '.' => {
+                    insert();
+                    in_dot = true;
+                    add_to_word(c);
+                },
                 ' ' => {
                     insert();
                     *column.borrow_mut() += 1;
@@ -265,6 +283,21 @@ pub mod tests {
                     },
                 },
             ]
+        );
+    }
+
+    #[test]
+    pub fn it_can_lex_for_expressions() {
+        let tokens = lex("for i in 0..10 {}");
+
+        let token_parts: Vec<&str> = tokens
+            .iter()
+            .map(|token| token.value.as_ref())
+            .collect();
+
+        assert_eq!(
+            vec!["for", "i", "in", "0", "..", "10", "{", "}"],
+            token_parts,
         );
     }
 }

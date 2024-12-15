@@ -1,4 +1,3 @@
-use crate::types::Possibly::{None, Some};
 use crate::types::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -119,7 +118,7 @@ impl State {
 }
 
 fn inner_parse(state: State) -> Result<Program, LocError> {
-    let (expressions, state) = parse_expr_list(state);
+    let (expressions, state) = parse_expr_list(state)?;
 
     let state = skip_all("\n", state);
 
@@ -134,14 +133,14 @@ fn inner_parse(state: State) -> Result<Program, LocError> {
     Ok(Program::new(expressions))
 }
 
-fn parse_expr_list(state: State) -> (Vec<Expression>, State) {
+fn parse_expr_list(state: State) -> Result<(Vec<Expression>, State), LocError> {
     let state = skip_all("\n", state);
 
     let mut expressions = vec![];
     let mut state = state.clone();
     let mut remaining_state = state.len();
 
-    while let Some((expr, next_state)) = parse_next_expr_allow_newline(state.clone()) {
+    while let Some((expr, next_state)) = parse_next_expr_allow_newline(state.clone())? {
         state.print(format!("FOUND EXPRESSION: {:?}", expr));
         state.print_remaining();
 
@@ -155,33 +154,40 @@ fn parse_expr_list(state: State) -> (Vec<Expression>, State) {
         remaining_state = state.len();
     }
 
-    (expressions, state.clone())
+    Ok((expressions, state.clone()))
 }
 
-fn parse_var_decl(state: State) -> Possibly<(VarDecl, State), LocError> {
+fn parse_var_decl(state: State) -> Result<Option<(VarDecl, State)>, LocError> {
     if state.limited {
-        return Possibly::None;
+        return Ok(None);
     }
 
     if let Option::Some((token, state)) = pick("let", &state) {
-        if let Some((ident, state)) = take_ident(&state) {
-            if let Some(state) = take("=", state) {
-                if let Some((expr, state)) = parse_next_expr(state) {
-                    Some((VarDecl { ident, expr }, state))
+        if let Some((ident, state)) = take_ident(&state)? {
+            if let Some(state) = take("=", state)? {
+                if let Some((expr, state)) = parse_next_expr(state)? {
+                    Ok(Some((
+                        VarDecl {
+                            ident: ident.value,
+                            expr,
+                            loc: loc_from_first(&state, token.loc),
+                        },
+                        state,
+                    )))
                 } else {
-                    None
+                    Ok(None)
                 }
             } else {
-                None
+                Ok(None)
             }
         } else {
-            Possibly::Err(LocError {
+            Err(LocError {
                 message: "Expected identifier after let keyword".to_string(),
                 loc: loc_from_first(&state, token.loc),
             })
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -193,21 +199,20 @@ fn loc_from_first(state: &State, fallback: Loc) -> Loc {
     }
 }
 
-fn parse_if_expr(state: State) -> Possibly<(IfExpr, State), LocError> {
+fn parse_if_expr(state: State) -> Result<Option<(IfExpr, State)>, LocError> {
     if state.limited {
-        return Possibly::None;
+        return Ok(None);
     }
 
     match pick("if", &state) {
-        Option::None => Possibly::None,
-        Option::Some((if_kw, state)) => {
+        None => Ok(None),
+        Some((if_kw, state)) => {
             state.print(format!("FOUND IF KEYWORD"));
             state.print_remaining();
-            match parse_next_expr(state.limit()) {
+            match parse_next_expr(state.limit())? {
                 None => {
-                    println!("NO CONDITION");
                     let loc = loc_from_first(&state, if_kw.loc);
-                    Possibly::Err(LocError {
+                    Err(LocError {
                         message: "Expected expression after if keyword".to_string(),
                         loc,
                     })
@@ -218,9 +223,9 @@ fn parse_if_expr(state: State) -> Possibly<(IfExpr, State), LocError> {
                     state.print(format!("FOUND CONDITION: {:?}", condition));
                     state.print_remaining();
 
-                    let if_expr = parse_next_expr(state.clone());
+                    let if_expr = parse_next_expr(state.clone())?;
                     if if_expr == None {
-                        return Possibly::Err(LocError {
+                        return Err(LocError {
                             message: "Expected expression after if condition".to_string(),
                             loc: if_kw.loc,
                         });
@@ -231,29 +236,29 @@ fn parse_if_expr(state: State) -> Possibly<(IfExpr, State), LocError> {
 
                     let else_kw = pick("else", &state);
                     if else_kw == Option::None {
-                        return Possibly::Some((
+                        return Ok(Some((
                             IfExpr {
                                 condition,
                                 then_expr: if_expr,
                                 else_expr: Option::None,
                             },
                             state,
-                        ));
+                        )));
                     }
                     let (else_kw, state) = else_kw.unwrap();
 
                     let opening_brace = pick("{", &state);
                     if opening_brace == Option::None {
-                        return Possibly::Err(LocError {
+                        return Err(LocError {
                             message: "Expected opening brace after else keyword".to_string(),
                             loc: else_kw.loc,
                         });
                     }
                     let (opening_brace, state) = opening_brace.unwrap();
 
-                    let else_expr = parse_next_expr(state.clone());
+                    let else_expr = parse_next_expr(state.clone())?;
                     if else_expr == None {
-                        return Possibly::Err(LocError {
+                        return Err(LocError {
                             message: "Expected expression after else keyword".to_string(),
                             loc: opening_brace.loc,
                         });
@@ -263,52 +268,163 @@ fn parse_if_expr(state: State) -> Possibly<(IfExpr, State), LocError> {
                     let closing_brace = pick("}", &state);
                     if closing_brace == Option::None {
                         let loc = loc_from_first(&state, opening_brace.loc);
-                        return Possibly::Err(LocError {
+                        return Err(LocError {
                             message: "Expected closing brace after else expression".to_string(),
                             loc,
                         });
                     }
                     let (_closing_brace, state) = closing_brace.unwrap();
 
-                    Possibly::Some((
+                    Ok(Some((
                         IfExpr {
                             condition,
                             then_expr: if_expr,
                             else_expr: Option::Some(else_expr),
                         },
                         state,
-                    ))
-                }
-                Possibly::Err(err) => {
-                    state.print(format!("CONDITION ERROR"));
-                    Possibly::Err(err)
+                    )))
                 }
             }
         }
     }
 }
 
-fn parse_reassignment(state: State) -> Possibly<(ReAssignment, State), LocError> {
-    if let Some((ident, state)) = take_ident(&state) {
-        if let Some(state) = take("=", state) {
-            if let Some((expr, state)) = parse_next_expr(state) {
-                Some((ReAssignment { ident, expr }, state))
+fn parse_for_expr(state: &State) -> Result<Option<(ForExpr, State)>, LocError> {
+    // for
+    if let Some((for_token, state)) = pick("for", &state.limit()) {
+        // n
+        if let Some((ident, state)) = take_ident(&state)? {
+            // in
+            if let Some((_, state)) = pick("in", &state) {
+                // <expr>
+                if let Some((start_expr, state)) = parse_next_expr(state)? {
+                    // ..
+                    if let Some((dot_token, state)) = pick("..", &state) {
+                        let end_token = match state.tokens.get(0) {
+                            Some(t) => t.clone(),
+                            None => dot_token.clone(),
+                        };
+
+                        // <expr>
+                        if let Some((end_expr, state)) = parse_next_expr(state)? {
+                            // {
+                            if let Some((opening_brace, state)) = pick("{", &state) {
+                                let state = state.unlimit();
+                                let state = skip_all("\n", state);
+                                let (expressions, state) = parse_expr_list(state)?;
+                                let state = skip_all("\n", state);
+
+                                // }
+                                if let Some((_, state)) = pick("}", &state) {
+                                    let for_expr = ForExpr {
+                                        identifier: ident.to_variable(),
+                                        start: Box::new(start_expr),
+                                        end: Box::new(end_expr),
+                                        body: expressions,
+                                    };
+                                    return Ok(Some((for_expr, state)));
+                                } else {
+                                    return Err(LocError {
+                                        message: "Missing closing brace in for-loop".to_string(),
+                                        loc: match state.tokens.get(0) {
+                                            Some(t) => t.loc.clone(),
+                                            None => opening_brace.loc,
+                                        },
+                                    });
+                                }
+                            } else {
+                                return Err(LocError {
+                                    message: "Missing opening brace in for-loop".to_string(),
+                                    loc: match state.tokens.get(0) {
+                                        Some(t) => t.loc.clone(),
+                                        None => end_token.loc,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
             } else {
-                None
+                return Err(LocError {
+                    message: "Missing 'in' keyword in for-loop".to_string(),
+                    loc: for_token.loc,
+                });
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn parse_while_expr(state: &State) -> Result<Option<(WhileExpr, State)>, LocError> {
+    // while
+    if let Some((while_token, state)) = pick("while", &state.limit()) {
+        // <expr>
+        if let Some((condition, state)) = parse_next_expr(state)? {
+            // {
+            if let Some((opening_brace, state)) = pick("{", &state) {
+                let state = state.unlimit();
+                let state = skip_all("\n", state);
+                let (expressions, state) = parse_expr_list(state)?;
+                let state = skip_all("\n", state);
+
+                // }
+                if let Some((_, state)) = pick("}", &state) {
+                    let while_expr = WhileExpr {
+                        condition: Box::new(condition),
+                        body: expressions,
+                    };
+                    return Ok(Some((while_expr, state)));
+                } else {
+                    return Err(LocError {
+                        message: "Missing closing brace in for-loop".to_string(),
+                        loc: match state.tokens.get(0) {
+                            Some(t) => t.loc.clone(),
+                            None => opening_brace.loc,
+                        },
+                    });
+                }
+            } else {
+                return Err(LocError {
+                    message: "Missing opening brace in for-loop".to_string(),
+                    loc: match state.tokens.get(0) {
+                        Some(t) => t.loc.clone(),
+                        None => while_token.loc,
+                    },
+                });
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn parse_reassignment(state: State) -> Result<Option<(ReAssignment, State)>, LocError> {
+    if let Some((ident, state)) = take_ident(&state)? {
+        if let Option::Some((_eq_token, state)) = pick("=", &state) {
+            if let Some((expr, state)) = parse_next_expr(state)? {
+                Ok(Some((
+                    ReAssignment {
+                        ident: ident.value,
+                        expr,
+                        loc: ident.loc,
+                    },
+                    state,
+                )))
+            } else {
+                Ok(None)
             }
         } else {
-            None
+            Ok(None)
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn take(expected: &str, state: State) -> Possibly<State, LocError> {
+fn take(expected: &str, state: State) -> Result<Option<State>, LocError> {
     if state.len() > 0 && state.first().value == expected {
-        Some(state.rest())
+        Ok(Some(state.rest()))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -320,36 +436,36 @@ fn pick(expected: &str, state: &State) -> Option<(Token, State)> {
     }
 }
 
-fn parse_touple(state: State) -> Possibly<(Expression, State), LocError> {
-    if let Some(next_state) = take("(", state) {
+fn parse_touple(state: State) -> Result<Option<(Expression, State)>, LocError> {
+    if let Some(next_state) = take("(", state)? {
         let mut state = next_state.clone();
         let mut expressions = Vec::<Expression>::new();
 
-        while let Some((expr, next_state)) = parse_next_expr(state.clone()) {
+        while let Some((expr, next_state)) = parse_next_expr(state.clone())? {
             state = next_state.clone();
             expressions.push(expr);
 
-            if let Some(next_state) = take(",", state.clone()) {
+            if let Some(next_state) = take(",", state.clone())? {
                 state = next_state;
             }
         }
 
-        if let Some(state) = take(")", state.clone()) {
-            Some((Expression::Touple(expressions), state.clone()))
+        if let Some(state) = take(")", state.clone())? {
+            Ok(Some((Expression::Touple(expressions), state.clone())))
         } else {
-            None
+            Ok(None)
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn parse_str(token: String) -> Possibly<String, LocError> {
+fn parse_str(token: String) -> Result<Option<String>, LocError> {
     let mut value = String::new();
 
     for (i, c) in token.chars().enumerate() {
         if i == 0 && c != '"' {
-            return None;
+            return Ok(None);
         }
         if i > 0 {
             value.push(c);
@@ -358,35 +474,35 @@ fn parse_str(token: String) -> Possibly<String, LocError> {
 
     value.pop();
 
-    Some(value)
+    Ok(Some(value))
 }
 
-fn take_ident(state: &State) -> Possibly<(String, State), LocError> {
+fn take_ident(state: &State) -> Result<Option<(Token, State)>, LocError> {
     if state.len() == 0 {
-        None
+        Ok(None)
     } else {
         match state.first().value.as_str() {
-            "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," => None,
-            _ => Some((state.first().value.clone(), state.rest())),
+            "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," => Ok(None),
+            _ => Ok(Some((state.first().clone(), state.rest()))),
         }
     }
 }
 
-fn take_token(state: State) -> Possibly<(Token, State), LocError> {
+fn take_token(state: State) -> Result<Option<(Token, State)>, LocError> {
     if state.len() == 0 {
-        None
+        Ok(None)
     } else {
         match state.first().value.as_str() {
-            "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," => None,
-            _ => Some((state.first().clone(), state.rest())),
+            "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," => Ok(None),
+            _ => Ok(Some((state.first().clone(), state.rest()))),
         }
     }
 }
 
-fn parse_func_call(state: State) -> Possibly<(FuncCall, State), LocError> {
-    if let Some((token, state)) = take_token(state) {
-        if let Some((expr, state)) = parse_next_expr(state) {
-            Some((
+fn parse_func_call(state: State) -> Result<Option<(FuncCall, State)>, LocError> {
+    if let Some((token, state)) = take_token(state)? {
+        if let Some((expr, state)) = parse_next_expr(state)? {
+            Ok(Some((
                 FuncCall {
                     ident: Variable {
                         ident: token.value,
@@ -395,16 +511,16 @@ fn parse_func_call(state: State) -> Possibly<(FuncCall, State), LocError> {
                     arg: Box::new(expr),
                 },
                 state,
-            ))
+            )))
         } else {
-            None
+            Ok(None)
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn parse_int(token: String) -> Possibly<i64, LocError> {
+fn parse_int(token: String) -> Option<i64> {
     let mut sum = 0;
     let len = token.len();
 
@@ -420,14 +536,14 @@ fn parse_int(token: String) -> Possibly<i64, LocError> {
     Some(sum)
 }
 
-fn parse_next_expr_allow_newline(state: State) -> Possibly<(Expression, State), LocError> {
+fn parse_next_expr_allow_newline(state: State) -> Result<Option<(Expression, State)>, LocError> {
     let state = skip_all("\n", state);
     parse_next_expr(state)
 }
 
-fn parse_next_expr(state: State) -> Possibly<(Expression, State), LocError> {
+fn parse_next_expr(state: State) -> Result<Option<(Expression, State)>, LocError> {
     if state.len() == 0 {
-        return None;
+        return Ok(None);
     };
 
     state.indent();
@@ -440,50 +556,44 @@ fn parse_next_expr(state: State) -> Possibly<(Expression, State), LocError> {
             .collect::<Vec<String>>()
     ));
 
-    match parse_if_expr(state.clone()) {
-        Possibly::Some((if_expr, state)) => {
+    match parse_if_expr(state.clone())? {
+        Some((if_expr, state)) => {
             state.dedent();
-            return Possibly::Some((Expression::IfExpr(Box::new(if_expr)), state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
-        }
-        Possibly::None => {}
-    }
-
-    match parse_var_decl(state.clone()) {
-        Some((value, state)) => {
-            state.dedent();
-            return Some((Expression::VarDecl(Box::new(value)), state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
+            return Ok(Some((Expression::IfExpr(Box::new(if_expr)), state)));
         }
         None => {}
     }
 
-    match parse_reassignment(state.clone()) {
+    if let Some((for_expr, state)) = parse_for_expr(&state)? {
+        state.dedent();
+        return Ok(Some((Expression::ForExpr(for_expr), state)));
+    }
+
+    if let Some((while_expr, state)) = parse_while_expr(&state)? {
+        state.dedent();
+        return Ok(Some((Expression::WhileExpr(while_expr), state)));
+    }
+
+    match parse_var_decl(state.clone())? {
         Some((value, state)) => {
             state.dedent();
-            return Some((Expression::ReAssignment(Box::new(value)), state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
+            return Ok(Some((Expression::VarDecl(Box::new(value)), state)));
         }
         None => {}
     }
 
-    match parse_str(state.first().clone().value) {
+    match parse_reassignment(state.clone())? {
+        Some((value, state)) => {
+            state.dedent();
+            return Ok(Some((Expression::ReAssignment(Box::new(value)), state)));
+        }
+        None => {}
+    }
+
+    match parse_str(state.first().clone().value)? {
         Some(value) => {
             state.dedent();
-            return Some((Expression::String(value), state.rest()));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
+            return Ok(Some((Expression::String(value), state.rest())));
         }
         None => {}
     }
@@ -491,95 +601,72 @@ fn parse_next_expr(state: State) -> Possibly<(Expression, State), LocError> {
     match parse_int(state.first().clone().value) {
         Some(value) => {
             state.dedent();
-            return Some((Expression::Int(value), state.rest()));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
+            return Ok(Some((Expression::Int(value), state.rest())));
         }
         None => {}
     }
 
-    match parse_return_expr(state.clone()) {
+    match parse_return_expr(state.clone())? {
         Some((value, state)) => {
             state.dedent();
-            return Some((Expression::Return(Box::new(value)), state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
+            return Ok(Some((Expression::Return(Box::new(value)), state)));
         }
         None => {}
     }
 
-    match parse_func_expr(state.clone()) {
+    match parse_func_expr(state.clone())? {
         Some((value, state)) => {
             state.dedent();
-            return Some((Expression::FuncExpr(value), state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
+            return Ok(Some((Expression::FuncExpr(value), state)));
         }
         None => {}
     }
 
-    match parse_touple(state.clone()) {
+    match parse_touple(state.clone())? {
         Some((value, state)) => {
             state.dedent();
-            return Some((value, state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
+            return Ok(Some((value, state)));
         }
         None => {}
     }
 
-    match parse_func_call(state.clone()) {
-        Some((value, state)) => {
-            state.dedent();
-            return Some((Expression::FuncCall(value), state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
-        }
-        None => {}
+    if let Some((value, state)) = parse_func_call(state.clone())? {
+        state.dedent();
+        return Ok(Some((Expression::FuncCall(value), state)));
     }
 
-    match take_token(state.clone()) {
-        Some((token, state)) => {
-            state.dedent();
-            return Some((Expression::Variable(Variable::new(token)), state));
-        }
-        Possibly::Err(e) => {
-            state.dedent();
-            return Possibly::Err(e);
-        }
-        None => {}
+    if let Some((token, state)) = take_token(state.clone())? {
+        state.dedent();
+        return Ok(Some((Expression::Variable(Variable::new(token)), state)));
     }
 
     state.dedent();
 
-    None
+    Ok(None)
 }
 
-fn parse_return_expr(state: State) -> Possibly<(Expression, State), LocError> {
+fn parse_return_expr(state: State) -> Result<Option<(Expression, State)>, LocError> {
     let state = skip_all("\n", state);
-    if let Some(state) = take("return", state) {
+    if let Some(state) = take("return", state.clone())? {
         let state = skip_all("\n", state);
-        if let Some((expr, state)) = parse_next_expr(state.clone()) {
-            Some((expr, state))
+        if let Some((expr, state)) = parse_next_expr(state.clone())? {
+            Ok(Some((expr, state)))
         } else {
-            Some((Expression::Null, state))
+            Ok(Some((Expression::Null, state)))
+        }
+    } else if let Some(state) = take("ret", state)? {
+        let state = skip_all("\n", state);
+        if let Some((expr, state)) = parse_next_expr(state.clone())? {
+            Ok(Some((expr, state)))
+        } else {
+            Ok(Some((Expression::Null, state)))
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn digit_to_int(ch: char) -> Possibly<i64, LocError> {
+fn digit_to_int(ch: char) -> Option<i64> {
     match ch {
         '0' => Some(0),
         '1' => Some(1),
@@ -595,27 +682,27 @@ fn digit_to_int(ch: char) -> Possibly<i64, LocError> {
     }
 }
 
-fn parse_func_args(state: State) -> Possibly<(Vec<String>, State), LocError> {
-    if let Some(state) = take("(", state) {
+fn parse_func_args(state: State) -> Result<Option<(Vec<String>, State)>, LocError> {
+    if let Some(state) = take("(", state)? {
         let mut state = state.clone();
         let mut args = Vec::<String>::new();
 
-        while let Some((ident, next_state)) = take_ident(&state) {
+        while let Some((ident, next_state)) = take_ident(&state)? {
             state = next_state.clone();
-            args.push(ident);
+            args.push(ident.value);
 
-            if let Some(next_state) = take(",", state.clone()) {
+            if let Some(next_state) = take(",", state.clone())? {
                 state = next_state;
             }
         }
 
-        if let Some(state) = take(")", state.clone()) {
-            Some((args, state.clone()))
+        if let Some(state) = take(")", state.clone())? {
+            Ok(Some((args, state.clone())))
         } else {
-            None
+            Ok(None)
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -627,42 +714,41 @@ fn skip_all(token: &str, state: State) -> State {
     }
 }
 
-fn parse_func_expr(state: State) -> Possibly<(FuncExpr, State), LocError> {
+fn parse_func_expr(state: State) -> Result<Option<(FuncExpr, State)>, LocError> {
     if state.limited {
-        return Possibly::None;
+        return Ok(None);
     }
 
     let state = skip_all("\n", state.clone());
 
-    let (args, state) = match parse_func_args(state.clone()) {
-        Possibly::Some((args, state)) => (args, state),
-        Possibly::None => (Vec::new(), state),
-        Possibly::Err(e) => return Possibly::Err(e),
+    let (args, state) = match parse_func_args(state.clone())? {
+        Some((args, state)) => (args, state),
+        None => (Vec::new(), state),
     };
 
     let state = skip_all("\n", state);
 
-    if let Some(state) = take("{", state) {
+    if let Some(state) = take("{", state)? {
         let state = skip_all("\n", state);
         state.indent();
-        let (expressions, state) = parse_expr_list(state);
+        let (expressions, state) = parse_expr_list(state)?;
         state.dedent();
         let state = skip_all("\n", state);
 
-        if let Some(state) = take("}", state) {
+        if let Some(state) = take("}", state)? {
             let state = skip_all("\n", state);
-            Some((
+            Ok(Some((
                 FuncExpr {
                     args,
                     expressions: expressions.clone(),
                 },
                 state,
-            ))
+            )))
         } else {
-            None
+            Ok(None)
         }
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -690,7 +776,7 @@ mod tests {
     pub fn it_can_parse_a_string() {
         let ast = parse_str(String::from("\"Hello world\"")).unwrap();
 
-        assert_eq!(ast, String::from("Hello world"));
+        assert_eq!(ast.unwrap(), String::from("Hello world"));
     }
 
     #[test]
@@ -699,6 +785,7 @@ mod tests {
             "\"Hello world\"",
             Loc::new(1, 1),
         )]))
+        .unwrap()
         .unwrap();
 
         assert_eq!(expression, Expression::String(String::from("Hello world")));
@@ -707,7 +794,9 @@ mod tests {
     #[test]
     pub fn it_can_parse_an_int_expression() {
         let (expression, _state) =
-            parse_next_expr(State::new(vec![Token::from("123", Loc::new(1, 1))])).unwrap();
+            parse_next_expr(State::new(vec![Token::from("123", Loc::new(1, 1))]))
+                .unwrap()
+                .unwrap();
 
         assert_eq!(expression, Expression::Int(123));
     }
@@ -718,6 +807,7 @@ mod tests {
             Token::from("foo", Loc::new(1, 1)),
             Token::from("123", Loc::new(1, 5)),
         ]))
+        .unwrap()
         .unwrap();
 
         assert_eq!(
@@ -781,8 +871,9 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_a_binary_func_call() {
-        let (func_call, _state) =
-            parse_func_call(State::new(lex("print(\"Hello\", \"world\")"))).unwrap();
+        let (func_call, _state) = parse_func_call(State::new(lex("print(\"Hello\", \"world\")")))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             func_call,
@@ -801,14 +892,16 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_a_touple() {
-        let (touple, _state) = parse_touple(State::new(lex("()"))).unwrap();
+        let (touple, _state) = parse_touple(State::new(lex("()"))).unwrap().unwrap();
 
         assert_eq!(touple, Expression::Touple(Vec::<Expression>::new()));
     }
 
     #[test]
     pub fn it_can_parse_a_touple_with_expressions() {
-        let (touple, _state) = parse_touple(State::new(lex("(\"foo\" \"bar\")"))).unwrap();
+        let (touple, _state) = parse_touple(State::new(lex("(\"foo\" \"bar\")")))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             touple,
@@ -821,20 +914,25 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_assignment() {
-        let (assignment, _state) = parse_var_decl(State::new(lex("let x = 10"))).unwrap();
+        let (assignment, _state) = parse_var_decl(State::new(lex("let x = 10")))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             assignment,
             VarDecl {
                 ident: String::from("x"),
                 expr: Expression::Int(10),
+                loc: Loc { line: 1, column: 1 },
             }
         );
     }
 
     #[test]
     pub fn it_can_parse_variables() {
-        let (func_call, _state) = parse_func_call(State::new(lex("print x"))).unwrap();
+        let (func_call, _state) = parse_func_call(State::new(lex("print x")))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             func_call,
@@ -864,6 +962,10 @@ mod tests {
                 Expression::VarDecl(Box::new(VarDecl {
                     ident: String::from("x"),
                     expr: Expression::Int(10),
+                    loc: Loc {
+                        line: 2,
+                        column: 23,
+                    },
                 })),
                 Expression::FuncCall(FuncCall {
                     ident: Variable {
@@ -893,10 +995,18 @@ mod tests {
                 Expression::VarDecl(Box::new(VarDecl {
                     ident: String::from("x"),
                     expr: Expression::Int(1),
+                    loc: Loc {
+                        line: 2,
+                        column: 22,
+                    },
                 })),
                 Expression::ReAssignment(Box::new(ReAssignment {
                     ident: String::from("x"),
                     expr: Expression::Int(2),
+                    loc: Loc {
+                        line: 3,
+                        column: 13,
+                    },
                 })),
                 Expression::FuncCall(FuncCall {
                     ident: Variable {
@@ -918,7 +1028,7 @@ mod tests {
             {}
         "#;
 
-        let (func_expr, state) = parse_func_expr(State::new(lex(source))).unwrap();
+        let (func_expr, state) = parse_func_expr(State::new(lex(source))).unwrap().unwrap();
 
         assert_eq!(
             func_expr,
@@ -939,7 +1049,7 @@ mod tests {
             }
         "#;
 
-        let (func_expr, state) = parse_func_expr(State::new(lex(source))).unwrap();
+        let (func_expr, state) = parse_func_expr(State::new(lex(source))).unwrap().unwrap();
 
         assert_eq!(
             func_expr,
@@ -1116,10 +1226,122 @@ mod tests {
 
         assert_eq!(
             LocError {
-                message: String::from("Unexpected token 'if'"),
-                loc: Loc::new(2, 13),
+                message: String::from("Expected expression after if keyword"),
+                loc: Loc::new(2, 15),
             },
             result,
+        );
+    }
+
+    #[test]
+    pub fn it_can_parse_a_return_statement() {
+        let source = r#"
+            return "Hello world"
+        "#;
+
+        let program = parse(lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program::new(vec![Expression::Return(Box::new(Expression::String(
+                "Hello world".to_string()
+            )))])
+        );
+    }
+
+    #[test]
+    pub fn it_can_parse_a_function_with_a_return() {
+        let source = r#"
+            () {
+                return "Hello world"
+            }
+        "#;
+
+        let program = parse(lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program::new(vec![Expression::FuncExpr(FuncExpr {
+                args: vec![],
+                expressions: vec![Expression::Return(Box::new(Expression::String(
+                    "Hello world".to_string()
+                )))]
+            })])
+        );
+    }
+
+    #[test]
+    pub fn it_can_parse_for_expressions() {
+        let source = r#"for i in 0..10 {123}"#;
+
+        let program = parse(lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program::new(vec![Expression::ForExpr(ForExpr {
+                identifier: Variable {
+                    ident: String::from("i"),
+                    loc: Loc { line: 1, column: 5 },
+                },
+                start: Box::new(Expression::Int(0)),
+                end: Box::new(Expression::Int(10)),
+                body: vec![Expression::Int(123),],
+            })])
+        );
+    }
+
+    #[test]
+    pub fn it_can_parse_for_with_a_condition() {
+        let source = r#"for lt(i, 10) {123}"#;
+
+        let program = parse(lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program::new(vec![Expression::ForExpr(ForExpr {
+                identifier: Variable {
+                    ident: String::from("i"),
+                    loc: Loc { line: 1, column: 5 },
+                },
+                start: Box::new(Expression::Int(0)),
+                end: Box::new(Expression::Int(10)),
+                body: vec![Expression::Int(123),],
+            })])
+        );
+    }
+
+    #[test]
+    pub fn it_can_parse_for_expressions_with_extra_stuff() {
+        let source = r#"
+            for i in 0..10 {
+                123
+            }
+            let x = 10
+            "#;
+
+        let program = parse(lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program::new(vec![
+                Expression::ForExpr(ForExpr {
+                    identifier: Variable {
+                        ident: String::from("i"),
+                        loc: Loc { line: 2, column: 17 },
+                    },
+                    start: Box::new(Expression::Int(0)),
+                    end: Box::new(Expression::Int(10)),
+                    body: vec![Expression::Int(123),],
+                }),
+                Expression::VarDecl(Box::new(VarDecl {
+                    ident: String::from("x"),
+                    expr: Expression::Int(10),
+                    loc: Loc {
+                        line: 5,
+                        column: 23,
+                    },
+                })),
+            ])
         );
     }
 }

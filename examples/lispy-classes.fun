@@ -1,9 +1,15 @@
 let NameEchoer = (name) {
-  return {
-    println name
+  return (cmd) {
+    if eq(cmd, "sayName") {
+        println name
+    }
+    if eq(cmd, "bark") {
+        println "Woof!"
+    }
   }
 }
 
 let dog = NameEchoer("Fido")
 
-dog()
+dog("sayName")
+dog("bark")

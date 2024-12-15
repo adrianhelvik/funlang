@@ -8,7 +8,7 @@ print "You can add numbers. 1234 + 10 = " print add(1234, 10) println " for exam
 
 let x = 10
 
-println("The number is: ", x)
+println("We've now assigned x to 10. Here is x: ", x)
 
 let print_message = {
   let message = "Hello world"
