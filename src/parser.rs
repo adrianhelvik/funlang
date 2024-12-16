@@ -1,27 +1,156 @@
 use crate::types::*;
-use std::cell::RefCell;
-use std::rc::Rc;
 
-pub fn parse(input: Tokens) -> Result<Program, LocError> {
-    inner_parse(State::new(input))
+type ParseError = Option<LocError>;
+type ParseResult<T> = Result<(T, State), ParseError>;
+type ER = ParseResult<Expression>;
+
+macro_rules! either {
+    ($state:expr, $($func:ident),+ $(,)?) => {
+        let state = $state;
+        $(
+            if let Some((value, state)) = allow_empty($func(&state))? {
+                return Ok((value, state));
+            }
+        )+
+    };
+}
+
+fn parse_access_target_expr(state: &State) -> ER {
+    either!(
+        state,
+        parse_str,
+        parse_int,
+        parse_touple,
+        parse_list,
+        parse_variable,
+    );
+
+    empty()
+}
+
+/// Very simple expressions can be passed to functions.
+fn parse_func_call_param_expr(state: &State) -> ER {
+    either!(
+        state,
+        parse_str,
+        parse_int,
+        parse_access,
+        parse_func_call,
+        parse_touple,
+        parse_list,
+        parse_variable,
+    );
+
+    empty()
+}
+
+/// Simple expressions can be used in for-, while, and if conditions
+/// and anywhere else.
+fn parse_condition_expr(state: &State) -> ER {
+    either!(
+        state,
+        parse_str,
+        parse_int,
+        parse_access,
+        parse_touple,
+        parse_list,
+        parse_func_call,
+        parse_variable,
+    );
+    empty()
+}
+
+/// Normal expression context. Available within touples for the special contexts.
+fn parse_next_expr(state: &State) -> ER {
+    if state.len() == 0 {
+        return Err(None);
+    };
+
+    either!(
+        state,
+        parse_str,
+        parse_int,
+        parse_if_expr,
+        parse_for_expr,
+        parse_while_expr,
+        parse_var_decl,
+        parse_reassignment,
+        parse_access,
+        parse_str,
+        parse_return_expr,
+        parse_func_expr,
+        parse_func_call,
+        parse_variable,
+        parse_list,
+    );
+
+    empty()
+}
+
+#[inline]
+fn empty<T>() -> Result<T, ParseError> {
+    return Err(None);
+}
+
+pub fn on_empty<Value, Producer>(
+    result: Result<Value, ParseError>,
+    create_err: Producer,
+) -> Result<Value, ParseError>
+where
+    Producer: Fn() -> LocError,
+{
+    match result {
+        Ok(t) => Ok(t),
+        Err(possibly_loc_err) => match possibly_loc_err {
+            None => Err(Some(create_err())),
+            Some(loc_err) => Err(Some(loc_err)),
+        },
+    }
+}
+
+fn transform_empty<T>(result: Result<T, ParseError>, default_value: T) -> Result<T, LocError> {
+    match result {
+        Err(Some(err)) => Err(err),
+        Err(None) => Ok(default_value),
+        Ok(value) => Ok(value),
+    }
+}
+
+pub fn parse(input: &Tokens) -> Result<Program, LocError> {
+    let state = State::new(input.clone());
+
+    parse_state(state)
+}
+
+fn parse_state(state: State) -> Result<Program, LocError> {
+    let (expressions, state) =
+        transform_empty(parse_expr_list(&state), (Vec::<Expression>::new(), state))?;
+
+    let state = skip_all("\n", state);
+
+    if state.len() > 0 {
+        let token = state.get(0);
+        return Err(token
+            .loc
+            .error(format!("Unexpected token '{}'", token.value).as_ref()));
+    }
+
+    Ok(Program::new(expressions))
 }
 
 #[derive(Debug, PartialEq)]
 struct State {
     tokens: Tokens,
-    limited: bool,
-    indent_level: Rc<RefCell<usize>>,
-    debug: bool,
+    final_loc: Loc,
 }
 
 impl State {
     pub fn new(tokens: Tokens) -> Self {
-        State {
-            tokens,
-            limited: false,
-            indent_level: Rc::new(RefCell::new(0)),
-            debug: false,
-        }
+        let final_loc = match tokens.last() {
+            Some(token) => token.loc.clone(),
+            None => Loc { line: 1, column: 1 },
+        };
+        State { tokens, final_loc }
     }
 
     pub fn len(&self) -> usize {
@@ -35,115 +164,45 @@ impl State {
     pub fn clone(&self) -> Self {
         State {
             tokens: self.tokens.clone(),
-            limited: self.limited,
-            indent_level: Rc::clone(&self.indent_level),
-            debug: self.debug,
+            final_loc: self.final_loc.clone(),
         }
     }
 
-    pub fn iter(&self) -> std::slice::Iter<Token> {
-        self.tokens.iter()
-    }
-
-    pub fn rest(&self) -> Self {
+    pub fn take_first(&self) -> Result<(Token, State), ()> {
+        if self.tokens.len() == 0 {
+            return Err(());
+        }
         let mut tokens = self.tokens.clone();
-        tokens.remove(0);
-        State {
-            tokens,
-            limited: self.limited,
-            indent_level: Rc::clone(&self.indent_level),
-            debug: self.debug,
-        }
-    }
+        let first = tokens.remove(0);
 
-    pub fn first(&self) -> Token {
-        self.tokens.get(0).cloned().unwrap()
-    }
-
-    pub fn limit(&self) -> Self {
-        State {
-            tokens: self.tokens.clone(),
-            limited: true,
-            indent_level: Rc::clone(&self.indent_level.clone()),
-            debug: self.debug,
-        }
-    }
-
-    pub fn unlimit(&self) -> Self {
-        State {
-            tokens: self.tokens.clone(),
-            limited: false,
-            indent_level: Rc::clone(&self.indent_level.clone()),
-            debug: self.debug,
-        }
-    }
-
-    pub fn print(&self, message: String) {
-        if !self.debug {
-            return;
-        }
-        println!("{}{}", "  ".repeat(*self.indent_level.borrow()), message);
-    }
-
-    pub fn print_remaining(&self) {
-        if !self.debug {
-            return;
-        }
-        self.print(format!(
-            "REMAINING TOKENS: {:?}",
-            self.tokens
-                .iter()
-                .map(|t| t.value.clone())
-                .collect::<Vec<String>>()
+        return Ok((
+            first,
+            State {
+                tokens,
+                final_loc: self.final_loc.clone(),
+            },
         ));
     }
 
-    pub fn indent(&self) {
-        if !self.debug {
-            return;
-        }
-        *self.indent_level.borrow_mut() += 1;
-    }
-
-    pub fn dedent(&self) {
-        if !self.debug {
-            return;
-        }
-        let mut indent_level = self.indent_level.borrow_mut();
-        if *indent_level <= 0 {
-            panic!("Cannot dedent below 0");
-        }
-        *indent_level -= 1;
+    fn error(&self, message: &str) -> ParseError {
+        Some(LocError {
+            message: message.to_string(),
+            loc: match self.tokens.get(0) {
+                Some(token) => token.loc.clone(),
+                None => self.final_loc.clone(),
+            },
+        })
     }
 }
 
-fn inner_parse(state: State) -> Result<Program, LocError> {
-    let (expressions, state) = parse_expr_list(state)?;
-
-    let state = skip_all("\n", state);
-
-    if state.len() > 0 {
-        let token = state.get(0);
-        return Err(LocError {
-            message: format!("Unexpected token '{}'", token.value),
-            loc: token.loc,
-        });
-    }
-
-    Ok(Program::new(expressions))
-}
-
-fn parse_expr_list(state: State) -> Result<(Vec<Expression>, State), LocError> {
-    let state = skip_all("\n", state);
+fn parse_expr_list(state: &State) -> ParseResult<Vec<Expression>> {
+    let state = skip_all("\n", state.clone());
 
     let mut expressions = vec![];
     let mut state = state.clone();
     let mut remaining_state = state.len();
 
-    while let Some((expr, next_state)) = parse_next_expr_allow_newline(state.clone())? {
-        state.print(format!("FOUND EXPRESSION: {:?}", expr));
-        state.print_remaining();
-
+    while let Some((expr, next_state)) = allow_empty(parse_next_expr_allow_newline(&state))? {
         expressions.push(expr);
         state = next_state;
 
@@ -157,315 +216,248 @@ fn parse_expr_list(state: State) -> Result<(Vec<Expression>, State), LocError> {
     Ok((expressions, state.clone()))
 }
 
-fn parse_var_decl(state: State) -> Result<Option<(VarDecl, State)>, LocError> {
-    if state.limited {
-        return Ok(None);
-    }
+fn parse_comma_expr_list(state: State) -> ParseResult<Vec<Expression>> {
+    let state = skip_all("\n", state);
 
-    if let Option::Some((token, state)) = pick("let", &state) {
-        if let Some((ident, state)) = take_ident(&state)? {
-            if let Some(state) = take("=", state)? {
-                if let Some((expr, state)) = parse_next_expr(state)? {
-                    Ok(Some((
-                        VarDecl {
-                            ident: ident.value,
-                            expr,
-                            loc: loc_from_first(&state, token.loc),
-                        },
-                        state,
-                    )))
-                } else {
-                    Ok(None)
-                }
-            } else {
-                Ok(None)
-            }
-        } else {
-            Err(LocError {
-                message: "Expected identifier after let keyword".to_string(),
-                loc: loc_from_first(&state, token.loc),
-            })
+    let mut expressions = vec![];
+    let mut state = state.clone();
+    let mut remaining_state = state.len();
+
+    while let Some((expr, next_state)) = allow_empty(parse_next_expr_allow_newline(&state))? {
+        expressions.push(expr);
+        state = next_state;
+
+        if state.len() == remaining_state {
+            panic!("Infinite loop in parse()");
         }
-    } else {
-        Ok(None)
-    }
-}
 
-fn loc_from_first(state: &State, fallback: Loc) -> Loc {
-    if state.len() > 0 {
-        state.get(0).loc.clone()
-    } else {
-        fallback
-    }
-}
+        remaining_state = state.len();
 
-fn parse_if_expr(state: State) -> Result<Option<(IfExpr, State)>, LocError> {
-    if state.limited {
-        return Ok(None);
-    }
-
-    match pick("if", &state) {
-        None => Ok(None),
-        Some((if_kw, state)) => {
-            state.print(format!("FOUND IF KEYWORD"));
-            state.print_remaining();
-            match parse_next_expr(state.limit())? {
-                None => {
-                    let loc = loc_from_first(&state, if_kw.loc);
-                    Err(LocError {
-                        message: "Expected expression after if keyword".to_string(),
-                        loc,
-                    })
-                }
-                Some((condition, state)) => {
-                    let state = state.unlimit();
-
-                    state.print(format!("FOUND CONDITION: {:?}", condition));
-                    state.print_remaining();
-
-                    let if_expr = parse_next_expr(state.clone())?;
-                    if if_expr == None {
-                        return Err(LocError {
-                            message: "Expected expression after if condition".to_string(),
-                            loc: if_kw.loc,
-                        });
-                    }
-                    let (if_expr, state) = if_expr.unwrap();
-
-                    let state = skip_all("\n", state);
-
-                    let else_kw = pick("else", &state);
-                    if else_kw == Option::None {
-                        return Ok(Some((
-                            IfExpr {
-                                condition,
-                                then_expr: if_expr,
-                                else_expr: Option::None,
-                            },
-                            state,
-                        )));
-                    }
-                    let (else_kw, state) = else_kw.unwrap();
-
-                    let opening_brace = pick("{", &state);
-                    if opening_brace == Option::None {
-                        return Err(LocError {
-                            message: "Expected opening brace after else keyword".to_string(),
-                            loc: else_kw.loc,
-                        });
-                    }
-                    let (opening_brace, state) = opening_brace.unwrap();
-
-                    let else_expr = parse_next_expr(state.clone())?;
-                    if else_expr == None {
-                        return Err(LocError {
-                            message: "Expected expression after else keyword".to_string(),
-                            loc: opening_brace.loc,
-                        });
-                    }
-                    let (else_expr, state) = else_expr.unwrap();
-
-                    let closing_brace = pick("}", &state);
-                    if closing_brace == Option::None {
-                        let loc = loc_from_first(&state, opening_brace.loc);
-                        return Err(LocError {
-                            message: "Expected closing brace after else expression".to_string(),
-                            loc,
-                        });
-                    }
-                    let (_closing_brace, state) = closing_brace.unwrap();
-
-                    Ok(Some((
-                        IfExpr {
-                            condition,
-                            then_expr: if_expr,
-                            else_expr: Option::Some(else_expr),
-                        },
-                        state,
-                    )))
+        match take(",", &state) {
+            Err(err) => {
+                return match err {
+                    Some(err) => Err(Some(err)),
+                    None => Ok((expressions, state.clone())),
                 }
             }
-        }
-    }
-}
-
-fn parse_for_expr(state: &State) -> Result<Option<(ForExpr, State)>, LocError> {
-    // for
-    if let Some((for_token, state)) = pick("for", &state.limit()) {
-        // n
-        if let Some((ident, state)) = take_ident(&state)? {
-            // in
-            if let Some((_, state)) = pick("in", &state) {
-                // <expr>
-                if let Some((start_expr, state)) = parse_next_expr(state)? {
-                    // ..
-                    if let Some((dot_token, state)) = pick("..", &state) {
-                        let end_token = match state.tokens.get(0) {
-                            Some(t) => t.clone(),
-                            None => dot_token.clone(),
-                        };
-
-                        // <expr>
-                        if let Some((end_expr, state)) = parse_next_expr(state)? {
-                            // {
-                            if let Some((opening_brace, state)) = pick("{", &state) {
-                                let state = state.unlimit();
-                                let state = skip_all("\n", state);
-                                let (expressions, state) = parse_expr_list(state)?;
-                                let state = skip_all("\n", state);
-
-                                // }
-                                if let Some((_, state)) = pick("}", &state) {
-                                    let for_expr = ForExpr {
-                                        identifier: ident.to_variable(),
-                                        start: Box::new(start_expr),
-                                        end: Box::new(end_expr),
-                                        body: expressions,
-                                    };
-                                    return Ok(Some((for_expr, state)));
-                                } else {
-                                    return Err(LocError {
-                                        message: "Missing closing brace in for-loop".to_string(),
-                                        loc: match state.tokens.get(0) {
-                                            Some(t) => t.loc.clone(),
-                                            None => opening_brace.loc,
-                                        },
-                                    });
-                                }
-                            } else {
-                                return Err(LocError {
-                                    message: "Missing opening brace in for-loop".to_string(),
-                                    loc: match state.tokens.get(0) {
-                                        Some(t) => t.loc.clone(),
-                                        None => end_token.loc,
-                                    },
-                                });
-                            }
-                        }
-                    }
-                }
-            } else {
-                return Err(LocError {
-                    message: "Missing 'in' keyword in for-loop".to_string(),
-                    loc: for_token.loc,
-                });
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn parse_while_expr(state: &State) -> Result<Option<(WhileExpr, State)>, LocError> {
-    // while
-    if let Some((while_token, state)) = pick("while", &state.limit()) {
-        // <expr>
-        if let Some((condition, state)) = parse_next_expr(state)? {
-            // {
-            if let Some((opening_brace, state)) = pick("{", &state) {
-                let state = state.unlimit();
-                let state = skip_all("\n", state);
-                let (expressions, state) = parse_expr_list(state)?;
-                let state = skip_all("\n", state);
-
-                // }
-                if let Some((_, state)) = pick("}", &state) {
-                    let while_expr = WhileExpr {
-                        condition: Box::new(condition),
-                        body: expressions,
-                    };
-                    return Ok(Some((while_expr, state)));
-                } else {
-                    return Err(LocError {
-                        message: "Missing closing brace in for-loop".to_string(),
-                        loc: match state.tokens.get(0) {
-                            Some(t) => t.loc.clone(),
-                            None => opening_brace.loc,
-                        },
-                    });
-                }
-            } else {
-                return Err(LocError {
-                    message: "Missing opening brace in for-loop".to_string(),
-                    loc: match state.tokens.get(0) {
-                        Some(t) => t.loc.clone(),
-                        None => while_token.loc,
-                    },
-                });
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn parse_reassignment(state: State) -> Result<Option<(ReAssignment, State)>, LocError> {
-    if let Some((ident, state)) = take_ident(&state)? {
-        if let Option::Some((_eq_token, state)) = pick("=", &state) {
-            if let Some((expr, state)) = parse_next_expr(state)? {
-                Ok(Some((
-                    ReAssignment {
-                        ident: ident.value,
-                        expr,
-                        loc: ident.loc,
-                    },
-                    state,
-                )))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    } else {
-        Ok(None)
-    }
-}
-
-fn take(expected: &str, state: State) -> Result<Option<State>, LocError> {
-    if state.len() > 0 && state.first().value == expected {
-        Ok(Some(state.rest()))
-    } else {
-        Ok(None)
-    }
-}
-
-fn pick(expected: &str, state: &State) -> Option<(Token, State)> {
-    if state.len() > 0 && state.first().value == expected {
-        Option::Some((state.first().clone(), state.rest()))
-    } else {
-        Option::None
-    }
-}
-
-fn parse_touple(state: State) -> Result<Option<(Expression, State)>, LocError> {
-    if let Some(next_state) = take("(", state)? {
-        let mut state = next_state.clone();
-        let mut expressions = Vec::<Expression>::new();
-
-        while let Some((expr, next_state)) = parse_next_expr(state.clone())? {
-            state = next_state.clone();
-            expressions.push(expr);
-
-            if let Some(next_state) = take(",", state.clone())? {
+            Ok(next_state) => {
                 state = next_state;
             }
-        }
+        };
+    }
 
-        if let Some(state) = take(")", state.clone())? {
-            Ok(Some((Expression::Touple(expressions), state.clone())))
-        } else {
-            Ok(None)
-        }
+    Ok((expressions, state.clone()))
+}
+
+fn require(expected: &str, state: &State, message: &str) -> Result<State, ParseError> {
+    let (token, state) = state.take_first().map_err(|()| None)?;
+    if token.value == expected {
+        Ok(state)
     } else {
-        Ok(None)
+        Err(state.error(&format!(
+            "{} (expected '{}', got '{}')",
+            message, expected, &token.value
+        )))
     }
 }
 
-fn parse_str(token: String) -> Result<Option<String>, LocError> {
+fn parse_var_decl(state: &State) -> ER {
+    let (let_token, state) = pick("let", &state)?;
+
+    let (ident, state) = take_ident_token(&state)?;
+
+    let state = require("=", &state, "Expected identifier after let keyword")?;
+
+    let (expr, state) = parse_next_expr(&state)?;
+
+    Ok((
+        Expression::VarDecl(Box::new(VarDecl {
+            ident: ident.value,
+            expr,
+            loc: let_token.loc.clone(),
+        })),
+        state,
+    ))
+}
+
+fn parse_if_expr(state: &State) -> ER {
+    let (if_kw, state) = pick("if", state)?;
+
+    let (condition, state) = match parse_condition_expr(&state) {
+        Ok((condition, state)) => (condition, state),
+        Err(Some(err)) => return Err(Some(err)),
+        Err(None) => {
+            return Err(Some(
+                if_kw.loc.error("Expected expression after if keyword"),
+            ))
+        }
+    };
+
+    let (then_expr, state) = on_empty(parse_next_expr(&state), || {
+        if_kw.loc.error("Expected expression after if condition")
+    })?;
+
+    let state = skip_all("\n", state);
+
+    let (else_kw, state) = match pick("else", &state) {
+        Err(e) => {
+            return match e {
+                Some(e) => Err(Some(e)),
+                None => Ok((
+                    Expression::IfExpr(Box::new(IfExpr {
+                        condition,
+                        then_expr,
+                        else_expr: None,
+                    })),
+                    state,
+                )),
+            };
+        }
+        other => other,
+    }?;
+
+    let (opening_brace, state) = match pick("{", &state) {
+        Ok(state) => Ok(state),
+        Err(e) => Err(match e {
+            Some(e) => Some(e),
+            None => Some(LocError {
+                message: "Expected opening brace after else keyword".to_string(),
+                loc: else_kw.loc,
+            }),
+        }),
+    }?;
+
+    let (else_expr, state) = match parse_next_expr(&state) {
+        Ok(value) => Ok(value),
+        Err(err) => Err(match err {
+            Some(e) => Some(e),
+            None => Some(LocError {
+                message: "Expected expression after else keyword".to_string(),
+                loc: opening_brace.loc,
+            }),
+        }),
+    }?;
+
+    let state = require("}", &state, "Closing brace is required")?;
+
+    Ok((
+        Expression::IfExpr(Box::new(IfExpr {
+            condition,
+            then_expr,
+            else_expr: Option::Some(else_expr),
+        })),
+        state,
+    ))
+}
+
+fn parse_for_expr(state: &State) -> ER {
+    let state = take("for", &state)?;
+    let (ident, state) = take_ident_token(&state)?;
+    let state = require("in", &state, "Missing 'in' keyword in for-loop")?;
+    let (start_expr, state) = parse_condition_expr(&state)?;
+    println!("{:#?}", start_expr);
+    let state = take("..", &state)?;
+    let (end_expr, state) = parse_condition_expr(&state)?;
+    let state = require("{", &state, "Missing opening brace")?;
+    let (expressions, state) = parse_expr_list(&state)?;
+    let state = skip_all("\n", state);
+    let state = require("}", &state, "Missing closing brace in for-loop")?;
+
+    let for_expr = ForExpr {
+        identifier: ident.to_variable(),
+        start: Box::new(start_expr),
+        end: Box::new(end_expr),
+        body: expressions,
+    };
+
+    return Ok((Expression::ForExpr(for_expr), state));
+}
+
+fn parse_while_expr(state: &State) -> ER {
+    let state = take("while", &state)?;
+    let (condition, state) = parse_condition_expr(&state)?;
+    let state = require("{", &state, "Missing opening brace in while-loop")?;
+    let (expressions, state) = parse_expr_list(&state)?;
+    let state = skip_all("\n", state);
+    let state = require("}", &state, "Missing closing brace in while-loop")?;
+
+    let while_expr = WhileExpr {
+        condition: Box::new(condition),
+        body: expressions,
+    };
+
+    Ok((Expression::WhileExpr(while_expr), state))
+}
+
+fn take_identifier(state: &State) -> ParseResult<(Identifier, Loc)> {
+    let (first, state) = take_ident_token(state)?;
+    let mut identifiers = vec![first];
+    let mut state = state;
+    while let Some(next_state) = allow_empty(take(".", &state))? {
+        state = next_state.into();
+        let (successive, next_state) = take_ident_token(&state)?;
+        state = next_state.into();
+        identifiers.push(successive);
+    }
+
+    if identifiers.len() > 1 {
+        let strings = identifiers.iter().map(|token| token.value.clone()).collect();
+        return Ok(((Identifier::DotAccess(strings), identifiers[0].loc.clone()), state));
+    }
+
+    Ok((
+        (
+            Identifier::Literal(identifiers[0].value.clone()),
+            identifiers[0].loc.clone(),
+        ),
+        state,
+    ))
+}
+
+fn parse_reassignment(state: &State) -> ER {
+    let ((ident, loc), state) = take_identifier(state)?;
+    let state = take("=", &state)?;
+    let (expr, state) = parse_next_expr(&state)?;
+
+    Ok((
+        Expression::ReAssignment(Box::new(ReAssignment { ident, expr, loc })),
+        state,
+    ))
+}
+
+fn take(expected: &str, state: &State) -> Result<State, ParseError> {
+    let (token, state) = state.take_first().map_err(|()| None)?;
+    if token.value == expected {
+        Ok(state)
+    } else {
+        Err(None)
+    }
+}
+
+fn pick(expected: &str, state: &State) -> Result<(Token, State), ParseError> {
+    let (token, state) = state.take_first().map_err(|()| None)?;
+    if token.value == expected {
+        Ok((token, state))
+    } else {
+        Err(None)
+    }
+}
+
+fn parse_touple(state: &State) -> Result<(Expression, State), ParseError> {
+    let state = take("(", state)?;
+    let (expressions, state) = parse_comma_expr_list(state)?;
+    let state = require(")", &state, "Missing closing parenthesis for touple")?;
+
+    Ok((Expression::Touple(expressions), state))
+}
+
+fn parse_str(state: &State) -> Result<(Expression, State), ParseError> {
+    let (token, state) = state.take_first().map_err(|()| None)?;
     let mut value = String::new();
 
-    for (i, c) in token.chars().enumerate() {
+    for (i, c) in token.value.chars().enumerate() {
         if i == 0 && c != '"' {
-            return Ok(None);
+            return Err(None);
         }
         if i > 0 {
             value.push(c);
@@ -474,196 +466,126 @@ fn parse_str(token: String) -> Result<Option<String>, LocError> {
 
     value.pop();
 
-    Ok(Some(value))
+    Ok((Expression::String(value), state))
 }
 
-fn take_ident(state: &State) -> Result<Option<(Token, State)>, LocError> {
-    if state.len() == 0 {
-        Ok(None)
+fn take_ident_token(state: &State) -> ParseResult<Token> {
+    let (token, state) = state.take_first().map_err(|()| None)?;
+
+    if is_ident(&token) {
+        Ok((token, state))
     } else {
-        match state.first().value.as_str() {
-            "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," => Ok(None),
-            _ => Ok(Some((state.first().clone(), state.rest()))),
-        }
+        Err(None)
     }
 }
 
-fn take_token(state: State) -> Result<Option<(Token, State)>, LocError> {
-    if state.len() == 0 {
-        Ok(None)
+fn require_ident(state: &State) -> ParseResult<Token> {
+    let (token, state) = state
+        .take_first()
+        .map_err(|()| state.final_loc.error("Expected identifier"))?;
+
+    if is_ident(&token) {
+        Ok((token, state))
     } else {
-        match state.first().value.as_str() {
-            "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," => Ok(None),
-            _ => Ok(Some((state.first().clone(), state.rest()))),
-        }
+        Err(Some(token.loc.error("Expected identifier")))
     }
 }
 
-fn parse_func_call(state: State) -> Result<Option<(FuncCall, State)>, LocError> {
-    if let Some((token, state)) = take_token(state)? {
-        if let Some((expr, state)) = parse_next_expr(state)? {
-            Ok(Some((
-                FuncCall {
-                    ident: Variable {
-                        ident: token.value,
-                        loc: token.loc,
-                    },
-                    arg: Box::new(expr),
-                },
-                state,
-            )))
-        } else {
-            Ok(None)
-        }
-    } else {
-        Ok(None)
+fn is_ident(token: &Token) -> bool {
+    match token.value.as_ref() {
+        "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," | ".." | "=" => false,
+        _ => true,
     }
 }
 
-fn parse_int(token: String) -> Option<i64> {
+fn parse_func_call(state: &State) -> Result<(Expression, State), ParseError> {
+    let (token, state) = take_ident_token(state)?;
+    let (arg, state) = parse_func_call_param_expr(&state)?;
+
+    Ok((
+        Expression::FuncCall(FuncCall {
+            ident: Variable {
+                ident: token.value,
+                loc: token.loc,
+            },
+            arg: Box::new(arg),
+        }),
+        state,
+    ))
+}
+
+fn parse_int(state: &State) -> ER {
+    let (token, state) = state.take_first().map_err(|()| None)?;
     let mut sum = 0;
-    let len = token.len();
+    let len = token.value.len();
 
-    for (i, c) in token.chars().enumerate() {
+    for (i, c) in token.value.chars().enumerate() {
         let exponent = u32::try_from(len - i - 1).unwrap();
         if let Some(digit) = digit_to_int(c) {
             sum += digit * (10 as i64).pow(exponent);
         } else {
-            return None;
+            return Err(None);
         }
     }
 
-    Some(sum)
+    Ok((Expression::Int(sum), state))
 }
 
-fn parse_next_expr_allow_newline(state: State) -> Result<Option<(Expression, State)>, LocError> {
-    let state = skip_all("\n", state);
-    parse_next_expr(state)
+fn parse_access(state: &State) -> ER {
+    let (first, state) = parse_access_target_expr(state)?;
+    let (dot_token, state) = pick(".", &state)?;
+    let (second, state) = require_ident(&state)?;
+
+    Ok((
+        Expression::Access(Access {
+            loc: dot_token.loc.clone(),
+            target: Box::new(first),
+            key: second.value,
+        }),
+        state,
+    ))
 }
 
-fn parse_next_expr(state: State) -> Result<Option<(Expression, State)>, LocError> {
-    if state.len() == 0 {
-        return Ok(None);
+fn parse_next_expr_allow_newline(state: &State) -> Result<(Expression, State), ParseError> {
+    let state = skip_all("\n", state.clone());
+    parse_next_expr(&state)
+}
+
+fn allow_empty<T>(input: Result<T, ParseError>) -> Result<Option<T>, ParseError> {
+    match input {
+        Err(Some(err)) => Err(Some(err)),
+        Err(None) => Ok(None),
+        Ok(value) => Ok(Some(value)),
+    }
+}
+
+fn parse_variable(state: &State) -> ER {
+    let (token, state) = take_ident_token(state)?;
+    return Ok((Expression::Variable(Variable::new(token)), state));
+}
+
+fn parse_list(state: &State) -> Result<(Expression, State), ParseError> {
+    let (opening_bracket, state) = pick("[", state)?;
+    let (items, state) = parse_comma_expr_list(state)?;
+    let state = require("]", &state, "Unterminated list")?;
+
+    let expr = Expression::List(List {
+        items,
+        loc: opening_bracket.loc.clone(),
+    });
+
+    return Ok((expr, state));
+}
+
+fn parse_return_expr(state: &State) -> ER {
+    let state = skip_all("\n", state.clone());
+    let state = match allow_empty(take("return", &state))? {
+        Some(value) => value,
+        None => take("ret", &state)?,
     };
-
-    state.indent();
-
-    state.print(format!(
-        "parse_next_expr: {:?}",
-        state
-            .iter()
-            .map(|t| t.value.clone())
-            .collect::<Vec<String>>()
-    ));
-
-    match parse_if_expr(state.clone())? {
-        Some((if_expr, state)) => {
-            state.dedent();
-            return Ok(Some((Expression::IfExpr(Box::new(if_expr)), state)));
-        }
-        None => {}
-    }
-
-    if let Some((for_expr, state)) = parse_for_expr(&state)? {
-        state.dedent();
-        return Ok(Some((Expression::ForExpr(for_expr), state)));
-    }
-
-    if let Some((while_expr, state)) = parse_while_expr(&state)? {
-        state.dedent();
-        return Ok(Some((Expression::WhileExpr(while_expr), state)));
-    }
-
-    match parse_var_decl(state.clone())? {
-        Some((value, state)) => {
-            state.dedent();
-            return Ok(Some((Expression::VarDecl(Box::new(value)), state)));
-        }
-        None => {}
-    }
-
-    match parse_reassignment(state.clone())? {
-        Some((value, state)) => {
-            state.dedent();
-            return Ok(Some((Expression::ReAssignment(Box::new(value)), state)));
-        }
-        None => {}
-    }
-
-    match parse_str(state.first().clone().value)? {
-        Some(value) => {
-            state.dedent();
-            return Ok(Some((Expression::String(value), state.rest())));
-        }
-        None => {}
-    }
-
-    match parse_int(state.first().clone().value) {
-        Some(value) => {
-            state.dedent();
-            return Ok(Some((Expression::Int(value), state.rest())));
-        }
-        None => {}
-    }
-
-    match parse_return_expr(state.clone())? {
-        Some((value, state)) => {
-            state.dedent();
-            return Ok(Some((Expression::Return(Box::new(value)), state)));
-        }
-        None => {}
-    }
-
-    match parse_func_expr(state.clone())? {
-        Some((value, state)) => {
-            state.dedent();
-            return Ok(Some((Expression::FuncExpr(value), state)));
-        }
-        None => {}
-    }
-
-    match parse_touple(state.clone())? {
-        Some((value, state)) => {
-            state.dedent();
-            return Ok(Some((value, state)));
-        }
-        None => {}
-    }
-
-    if let Some((value, state)) = parse_func_call(state.clone())? {
-        state.dedent();
-        return Ok(Some((Expression::FuncCall(value), state)));
-    }
-
-    if let Some((token, state)) = take_token(state.clone())? {
-        state.dedent();
-        return Ok(Some((Expression::Variable(Variable::new(token)), state)));
-    }
-
-    state.dedent();
-
-    Ok(None)
-}
-
-fn parse_return_expr(state: State) -> Result<Option<(Expression, State)>, LocError> {
-    let state = skip_all("\n", state);
-    if let Some(state) = take("return", state.clone())? {
-        let state = skip_all("\n", state);
-        if let Some((expr, state)) = parse_next_expr(state.clone())? {
-            Ok(Some((expr, state)))
-        } else {
-            Ok(Some((Expression::Null, state)))
-        }
-    } else if let Some(state) = take("ret", state)? {
-        let state = skip_all("\n", state);
-        if let Some((expr, state)) = parse_next_expr(state.clone())? {
-            Ok(Some((expr, state)))
-        } else {
-            Ok(Some((Expression::Null, state)))
-        }
-    } else {
-        Ok(None)
-    }
+    let state = skip_all("\n", state.clone());
+    let (expr, state) = parse_next_expr(&state)?;
+    Ok((Expression::Return(Box::new(expr)), state))
 }
 
 fn digit_to_int(ch: char) -> Option<i64> {
@@ -682,74 +604,86 @@ fn digit_to_int(ch: char) -> Option<i64> {
     }
 }
 
-fn parse_func_args(state: State) -> Result<Option<(Vec<String>, State)>, LocError> {
-    if let Some(state) = take("(", state)? {
-        let mut state = state.clone();
-        let mut args = Vec::<String>::new();
+fn parse_func_args(state: &State) -> ParseResult<Vec<String>> {
+    let mut state = take("(", state)?;
+    let mut args = Vec::<String>::new();
 
-        while let Some((ident, next_state)) = take_ident(&state)? {
-            state = next_state.clone();
-            args.push(ident.value);
-
-            if let Some(next_state) = take(",", state.clone())? {
-                state = next_state;
+    loop {
+        state = match take_ident_token(&state) {
+            Ok((ident, state)) => {
+                args.push(ident.value);
+                state
             }
-        }
+            Err(err) => match err {
+                Some(err) => {
+                    return Err(Some(err));
+                }
+                None => {
+                    break;
+                }
+            },
+        };
+        state = match take(",", &state) {
+            Ok(state) => state,
+            Err(err) => match err {
+                Some(err) => {
+                    return Err(Some(err));
+                }
+                None => {
+                    break;
+                }
+            },
+        };
+    }
 
-        if let Some(state) = take(")", state.clone())? {
-            Ok(Some((args, state.clone())))
-        } else {
-            Ok(None)
+    let state = skip_all("\n", state);
+    let state = require(")", &state, "Missing closing parenthesis for function args")?;
+
+    return Ok((args, state));
+}
+
+fn skip_all(expected: &str, initial_state: State) -> State {
+    match initial_state.take_first() {
+        Ok((token, new_state)) => {
+            if token.value != expected {
+                return initial_state;
+            }
+            skip_all(expected, new_state)
         }
-    } else {
-        Ok(None)
+        Err(()) => initial_state,
     }
 }
 
-fn skip_all(token: &str, state: State) -> State {
-    if state.len() > 0 && state.get(0).value == token {
-        skip_all(token, state.rest())
-    } else {
-        state.clone()
-    }
-}
-
-fn parse_func_expr(state: State) -> Result<Option<(FuncExpr, State)>, LocError> {
-    if state.limited {
-        return Ok(None);
-    }
-
+fn parse_func_expr(state: &State) -> ER {
     let state = skip_all("\n", state.clone());
 
-    let (args, state) = match parse_func_args(state.clone())? {
+    let (args, state) = match allow_empty(parse_func_args(&state))? {
         Some((args, state)) => (args, state),
-        None => (Vec::new(), state),
+        None => (vec![], state),
     };
 
     let state = skip_all("\n", state);
 
-    if let Some(state) = take("{", state)? {
-        let state = skip_all("\n", state);
-        state.indent();
-        let (expressions, state) = parse_expr_list(state)?;
-        state.dedent();
-        let state = skip_all("\n", state);
+    let state = take("{", &state)?;
 
-        if let Some(state) = take("}", state)? {
-            let state = skip_all("\n", state);
-            Ok(Some((
-                FuncExpr {
-                    args,
-                    expressions: expressions.clone(),
-                },
-                state,
-            )))
-        } else {
-            Ok(None)
-        }
-    } else {
-        Ok(None)
-    }
+    let state = skip_all("\n", state);
+    let (expressions, state) = parse_expr_list(&state)?;
+    let state = skip_all("\n", state);
+
+    let state = require(
+        "}",
+        &state,
+        "Expected closing brace for function expression",
+    )?;
+    let state = skip_all("\n", state);
+
+    Ok((
+        Expression::FuncExpr(FuncExpr {
+            args,
+            expressions: expressions.clone(),
+        }),
+        state,
+    ))
 }
 
 #[cfg(test)]
@@ -767,25 +701,25 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_an_empty_program() {
-        let ast = parse(lex("")).unwrap();
+        let ast = parse(&lex("")).unwrap();
 
         assert_eq!(ast, Program::new(vec![]));
     }
 
     #[test]
     pub fn it_can_parse_a_string() {
-        let ast = parse_str(String::from("\"Hello world\"")).unwrap();
+        let (string, state) = parse_str(&State::new(lex("\"Hello world\""))).unwrap();
 
-        assert_eq!(ast.unwrap(), String::from("Hello world"));
+        assert_eq!(string, Expression::String(String::from("Hello world")));
+        assert_eq!(state.tokens.len(), 0);
     }
 
     #[test]
     pub fn it_can_parse_a_string_expression() {
-        let (expression, _state) = parse_next_expr(State::new(vec![Token::from(
+        let (expression, _state) = parse_next_expr(&State::new(vec![Token::from(
             "\"Hello world\"",
             Loc::new(1, 1),
         )]))
-        .unwrap()
         .unwrap();
 
         assert_eq!(expression, Expression::String(String::from("Hello world")));
@@ -794,20 +728,17 @@ mod tests {
     #[test]
     pub fn it_can_parse_an_int_expression() {
         let (expression, _state) =
-            parse_next_expr(State::new(vec![Token::from("123", Loc::new(1, 1))]))
-                .unwrap()
-                .unwrap();
+            parse_next_expr(&State::new(vec![Token::from("123", Loc::new(1, 1))])).unwrap();
 
         assert_eq!(expression, Expression::Int(123));
     }
 
     #[test]
     pub fn it_can_parse_a_unary_func_call() {
-        let (expression, state) = parse_next_expr(State::new(vec![
+        let (expression, state) = parse_next_expr(&State::new(vec![
             Token::from("foo", Loc::new(1, 1)),
             Token::from("123", Loc::new(1, 5)),
         ]))
-        .unwrap()
         .unwrap();
 
         assert_eq!(
@@ -821,12 +752,18 @@ mod tests {
             })
         );
 
-        assert_eq!(state, State::new(Vec::new()));
+        assert_eq!(
+            state,
+            State {
+                tokens: vec![],
+                final_loc: Loc::new(1, 5),
+            }
+        );
     }
 
     #[test]
     pub fn it_can_parse_a_program_with_a_func_call() {
-        let ast = parse(lex("print \"Hello world\"")).unwrap();
+        let ast = parse(&lex("print \"Hello world\"")).unwrap();
 
         assert_eq!(
             ast,
@@ -842,11 +779,40 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_a_program_with_multiple_func_calls() {
+        let tokens = lex("print \"Hello world\"\nprint \"Foo bar\"");
+
+        assert_eq!(tokens[0], Token::from("print", Loc::new(1, 1)));
+
+        let ast = parse(&tokens).unwrap();
+
+        assert_eq!(
+            ast,
+            Program::new(vec![
+                Expression::FuncCall(FuncCall {
+                    ident: Variable {
+                        ident: String::from("print"),
+                        loc: Loc::new(1, 1),
+                    },
+                    arg: Box::new(Expression::String(String::from("Hello world"))),
+                }),
+                Expression::FuncCall(FuncCall {
+                    ident: Variable {
+                        ident: String::from("print"),
+                        loc: Loc::new(2, 1),
+                    },
+                    arg: Box::new(Expression::String(String::from("Foo bar"))),
+                }),
+            ],)
+        );
+    }
+
+    #[test]
+    pub fn funky_same_line_multiple_function_calls() {
         let tokens = lex("print \"Hello world\" print \"Foo bar\"");
 
         assert_eq!(tokens[0], Token::from("print", Loc::new(1, 1)));
 
-        let ast = parse(tokens).unwrap();
+        let ast = parse(&tokens).unwrap();
 
         assert_eq!(
             ast,
@@ -871,13 +837,12 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_a_binary_func_call() {
-        let (func_call, _state) = parse_func_call(State::new(lex("print(\"Hello\", \"world\")")))
-            .unwrap()
-            .unwrap();
+        let (func_call, _state) =
+            parse_func_call(&State::new(lex("print(\"Hello\", \"world\")"))).unwrap();
 
         assert_eq!(
             func_call,
-            FuncCall {
+            Expression::FuncCall(FuncCall {
                 ident: Variable {
                     ident: String::from("print"),
                     loc: Loc::new(1, 1),
@@ -886,22 +851,20 @@ mod tests {
                     Expression::String(String::from("Hello")),
                     Expression::String(String::from("world")),
                 ])),
-            }
+            })
         );
     }
 
     #[test]
     pub fn it_can_parse_a_touple() {
-        let (touple, _state) = parse_touple(State::new(lex("()"))).unwrap().unwrap();
+        let (touple, _state) = parse_touple(&State::new(lex("()"))).unwrap();
 
         assert_eq!(touple, Expression::Touple(Vec::<Expression>::new()));
     }
 
     #[test]
     pub fn it_can_parse_a_touple_with_expressions() {
-        let (touple, _state) = parse_touple(State::new(lex("(\"foo\" \"bar\")")))
-            .unwrap()
-            .unwrap();
+        let (touple, _state) = parse_touple(&State::new(lex("(\"foo\", \"bar\")"))).unwrap();
 
         assert_eq!(
             touple,
@@ -914,29 +877,25 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_assignment() {
-        let (assignment, _state) = parse_var_decl(State::new(lex("let x = 10")))
-            .unwrap()
-            .unwrap();
+        let (assignment, _state) = parse_var_decl(&State::new(lex("let x = 10"))).unwrap();
 
         assert_eq!(
             assignment,
-            VarDecl {
+            Expression::VarDecl(Box::new(VarDecl {
                 ident: String::from("x"),
                 expr: Expression::Int(10),
                 loc: Loc { line: 1, column: 1 },
-            }
+            }))
         );
     }
 
     #[test]
-    pub fn it_can_parse_variables() {
-        let (func_call, _state) = parse_func_call(State::new(lex("print x")))
-            .unwrap()
-            .unwrap();
+    pub fn it_can_call_print_with_a_variable() {
+        let (func_call, _state) = parse_func_call(&State::new(lex("print x"))).unwrap();
 
         assert_eq!(
             func_call,
-            FuncCall {
+            Expression::FuncCall(FuncCall {
                 ident: Variable {
                     ident: String::from("print"),
                     loc: Loc::new(1, 1)
@@ -945,40 +904,36 @@ mod tests {
                     "x",
                     Loc::new(1, 7),
                 )))),
-            }
+            })
         )
     }
 
     #[test]
     pub fn you_can_assign_variables() {
-        let source = r#"
-            let x = 10
-            print x
-        "#;
+        let source = r#"let x = 10"#;
 
         assert_eq!(
-            parse(lex(source)).unwrap(),
-            Program::new(vec![
-                Expression::VarDecl(Box::new(VarDecl {
-                    ident: String::from("x"),
-                    expr: Expression::Int(10),
-                    loc: Loc {
-                        line: 2,
-                        column: 23,
-                    },
-                })),
-                Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(3, 13)
-                    },
-                    arg: Box::new(Expression::Variable(Variable::new(Token::from(
-                        "x",
-                        Loc::new(3, 19)
-                    )))),
-                })
-            ],)
+            parse(&lex(source)).unwrap(),
+            Program::new(vec![Expression::VarDecl(Box::new(VarDecl {
+                ident: String::from("x"),
+                expr: Expression::Int(10),
+                loc: Loc { line: 1, column: 1 },
+            })),],)
         )
+    }
+
+    #[test]
+    fn simple_reassignment() {
+        let source = "x = 1";
+
+        assert_eq!(
+            parse(&lex(source)).unwrap(),
+            Program::new(vec![Expression::ReAssignment(Box::new(ReAssignment {
+                ident: Identifier::Literal(String::from("x")),
+                expr: Expression::Int(1),
+                loc: Loc { line: 1, column: 1 },
+            })),])
+        );
     }
 
     #[test]
@@ -990,18 +945,18 @@ mod tests {
         "#;
 
         assert_eq!(
-            parse(lex(source)).unwrap(),
+            parse(&lex(source)).unwrap(),
             Program::new(vec![
                 Expression::VarDecl(Box::new(VarDecl {
                     ident: String::from("x"),
                     expr: Expression::Int(1),
                     loc: Loc {
                         line: 2,
-                        column: 22,
+                        column: 13,
                     },
                 })),
                 Expression::ReAssignment(Box::new(ReAssignment {
-                    ident: String::from("x"),
+                    ident: Identifier::Literal(String::from("x")),
                     expr: Expression::Int(2),
                     loc: Loc {
                         line: 3,
@@ -1028,17 +983,23 @@ mod tests {
             {}
         "#;
 
-        let (func_expr, state) = parse_func_expr(State::new(lex(source))).unwrap().unwrap();
+        let (func_expr, state) = parse_func_expr(&State::new(lex(source))).unwrap();
 
         assert_eq!(
             func_expr,
-            FuncExpr {
+            Expression::FuncExpr(FuncExpr {
                 args: Vec::new(),
                 expressions: Vec::new(),
-            }
+            })
         );
 
-        assert_eq!(state, State::new(Vec::new()));
+        assert_eq!(
+            state,
+            State {
+                tokens: vec![],
+                final_loc: Loc::new(2, 15),
+            }
+        );
     }
 
     #[test]
@@ -1049,11 +1010,11 @@ mod tests {
             }
         "#;
 
-        let (func_expr, state) = parse_func_expr(State::new(lex(source))).unwrap().unwrap();
+        let (func_expr, state) = parse_func_expr(&State::new(lex(source))).unwrap();
 
         assert_eq!(
             func_expr,
-            FuncExpr {
+            Expression::FuncExpr(FuncExpr {
                 args: Vec::new(),
                 expressions: vec![Expression::FuncCall(FuncCall {
                     ident: Variable {
@@ -1062,10 +1023,16 @@ mod tests {
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
                 })],
-            }
+            })
         );
 
-        assert_eq!(state, State::new(Vec::new()));
+        assert_eq!(
+            state,
+            State {
+                tokens: vec![],
+                final_loc: Loc::new(4, 14),
+            }
+        );
     }
 
     #[test]
@@ -1074,7 +1041,7 @@ mod tests {
             (x, y) { print "Hello world" }
         "#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1098,7 +1065,7 @@ mod tests {
             print b
         "#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1133,7 +1100,7 @@ mod tests {
             {
         "#;
 
-        let result = parse(lex(source)).err().unwrap();
+        let result = parse(&lex(source)).err().unwrap();
 
         assert_eq!(
             result,
@@ -1145,22 +1112,26 @@ mod tests {
     }
 
     #[test]
+    fn it_can_parse_true() {
+        let source = "true";
+        let program = parse(&lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program::new(vec![Expression::Variable(Variable {
+                ident: "true".to_string(),
+                loc: Loc::new(1, 1),
+            })])
+        );
+    }
+
+    #[test]
     pub fn it_can_parse_a_simple_if_expression() {
         let source = r#"
             if true {}
         "#;
 
-        let program = parse(lex(source));
-
-        if let Err(err) = program {
-            eprintln!(
-                "{}",
-                SyntaxError::generate(err, String::from(source)).message
-            );
-            panic!("Failed to parse program")
-        }
-
-        let program = program.unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1186,7 +1157,7 @@ mod tests {
             }
         "#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1216,7 +1187,7 @@ mod tests {
             if
         "#;
 
-        let opt = parse(lex(source));
+        let opt = parse(&lex(source));
 
         if opt.is_ok() {
             println!("{:#?}", opt);
@@ -1227,7 +1198,7 @@ mod tests {
         assert_eq!(
             LocError {
                 message: String::from("Expected expression after if keyword"),
-                loc: Loc::new(2, 15),
+                loc: Loc::new(2, 13),
             },
             result,
         );
@@ -1239,7 +1210,7 @@ mod tests {
             return "Hello world"
         "#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1257,7 +1228,7 @@ mod tests {
             }
         "#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1271,10 +1242,33 @@ mod tests {
     }
 
     #[test]
-    pub fn it_can_parse_for_expressions() {
+    fn it_can_parse_for_in_with_the_dedicated_parser_fn() {
+        let source = r#"for i in 0..10 {123}"#;
+        let tokens = lex(source);
+        let state = State::new(tokens);
+        let (for_expr, state) = parse_for_expr(&state).unwrap();
+
+        assert_eq!(
+            for_expr,
+            Expression::ForExpr(ForExpr {
+                identifier: Variable {
+                    ident: "i".to_string(),
+                    loc: Loc::new(1, 5),
+                },
+                start: Box::new(Expression::Int(0)),
+                end: Box::new(Expression::Int(10)),
+                body: vec![Expression::Int(123),],
+            })
+        );
+
+        assert_eq!(state.tokens, vec![]);
+    }
+
+    #[test]
+    fn it_can_parse_for_in_expressions() {
         let source = r#"for i in 0..10 {123}"#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1291,20 +1285,30 @@ mod tests {
     }
 
     #[test]
-    pub fn it_can_parse_for_with_a_condition() {
-        let source = r#"for lt(i, 10) {123}"#;
+    pub fn it_can_parse_a_while_loop() {
+        let source = r#"while lt(i, 10) {123}"#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
-            Program::new(vec![Expression::ForExpr(ForExpr {
-                identifier: Variable {
-                    ident: String::from("i"),
-                    loc: Loc { line: 1, column: 5 },
-                },
-                start: Box::new(Expression::Int(0)),
-                end: Box::new(Expression::Int(10)),
+            Program::new(vec![Expression::WhileExpr(WhileExpr {
+                condition: Box::new(Expression::FuncCall(FuncCall {
+                    ident: Variable {
+                        ident: "lt".to_string(),
+                        loc: Loc { line: 1, column: 7 },
+                    },
+                    arg: Box::new(Expression::Touple(vec![
+                        Expression::Variable(Variable {
+                            ident: "i".to_string(),
+                            loc: Loc {
+                                line: 1,
+                                column: 10,
+                            },
+                        }),
+                        Expression::Int(10),
+                    ])),
+                })),
                 body: vec![Expression::Int(123),],
             })])
         );
@@ -1319,7 +1323,7 @@ mod tests {
             let x = 10
             "#;
 
-        let program = parse(lex(source)).unwrap();
+        let program = parse(&lex(source)).unwrap();
 
         assert_eq!(
             program,
@@ -1327,7 +1331,10 @@ mod tests {
                 Expression::ForExpr(ForExpr {
                     identifier: Variable {
                         ident: String::from("i"),
-                        loc: Loc { line: 2, column: 17 },
+                        loc: Loc {
+                            line: 2,
+                            column: 17
+                        },
                     },
                     start: Box::new(Expression::Int(0)),
                     end: Box::new(Expression::Int(10)),
@@ -1338,10 +1345,166 @@ mod tests {
                     expr: Expression::Int(10),
                     loc: Loc {
                         line: 5,
-                        column: 23,
+                        column: 13,
                     },
                 })),
             ])
         );
+    }
+
+    #[test]
+    pub fn it_can_parse_lists() {
+        let source = r#"[5, 7, 13, 29]"#;
+
+        let ast = parse(&lex(source)).unwrap();
+
+        assert_eq!(
+            ast,
+            Program {
+                expressions: vec![Expression::List(List {
+                    loc: Loc { line: 1, column: 1 },
+                    items: vec![
+                        Expression::Int(5),
+                        Expression::Int(7),
+                        Expression::Int(13),
+                        Expression::Int(29),
+                    ],
+                }),],
+            }
+        );
+    }
+
+    #[test]
+    fn it_can_parse_function_args() {
+        let source = "(a, b, c) {\n}";
+
+        let ast = parse(&lex(source)).unwrap();
+
+        assert_eq!(
+            ast,
+            Program {
+                expressions: vec![Expression::FuncExpr(FuncExpr {
+                    args: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    expressions: vec![],
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn ret_return() {
+        let source = r#"
+            let x = () { ret 1 }
+        "#;
+
+        let program = parse(&lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program {
+                expressions: vec![Expression::VarDecl(Box::new(VarDecl {
+                    ident: "x".to_string(),
+                    loc: Loc::new(2, 13),
+                    expr: Expression::FuncExpr(FuncExpr {
+                        args: vec![],
+                        expressions: vec![Expression::Return(Box::new(Expression::Int(1))),],
+                    })
+                }))],
+            }
+        );
+    }
+
+    #[test]
+    fn nested_func_calls() {
+        let source = r#"eq(1, x())"#;
+
+        let program = parse(&lex(source)).unwrap();
+
+        assert_eq!(
+            program,
+            Program {
+                expressions: vec![Expression::FuncCall(FuncCall {
+                    ident: Variable {
+                        ident: "eq".to_string(),
+                        loc: Loc { line: 1, column: 1 },
+                    },
+                    arg: Box::new(Expression::Touple(vec![
+                        Expression::Int(1),
+                        Expression::FuncCall(FuncCall {
+                            ident: Variable {
+                                ident: "x".to_string(),
+                                loc: Loc { line: 1, column: 7 },
+                            },
+                            arg: Box::new(Expression::Touple(vec![]))
+                        })
+                    ]))
+                })]
+            }
+        );
+    }
+
+    mod dot_notation {
+        use super::*;
+        use pretty_assertions_sorted::assert_eq;
+
+        #[test]
+        fn access() {
+            let source = r#"foo.bar"#;
+
+            let ast = parse(&lex(source)).unwrap();
+
+            assert_eq!(
+                ast,
+                Program {
+                    expressions: vec![Expression::Access(Access {
+                        loc: Loc::new(1, 4),
+                        target: Box::new(Expression::Variable(Variable {
+                            loc: Loc::new(1, 1),
+                            ident: "foo".to_string(),
+                        })),
+                        key: "bar".to_string(),
+                    }),],
+                },
+            );
+        }
+
+        #[test]
+        fn assignment() {
+            let source = r#"foo.bar = 123"#;
+
+            let ast = parse(&lex(source)).unwrap();
+
+            assert_eq!(
+                ast,
+                Program {
+                    expressions: vec![Expression::ReAssignment(Box::new(ReAssignment {
+                        loc: Loc::new(1, 1),
+                        ident: Identifier::DotAccess(vec!["foo".to_string(), "bar".to_string(),]),
+                        expr: Expression::Int(123),
+                    }))],
+                },
+            );
+        }
+
+        /*
+        #[test]
+        fn method_call() {
+            let source = r#"foo.bar()"#;
+
+            let ast = parse(&lex(source)).unwrap();
+
+            assert_eq!(
+                ast,
+                Program {
+                    expressions: vec![
+                        Expression::FuncCall(FuncCall {
+                            ident: Identifier::DotAccess(vec!["foo".to_string(), "bar".to_string()]),
+                            arg: Box::new(Expression::Touple(vec![])),
+                        })
+                    ]
+                },
+            );
+        }
+*/
     }
 }

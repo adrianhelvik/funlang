@@ -10,8 +10,11 @@ use crate::interpreter::call_func_expr;
 use crate::interpreter::eval_expr_and_call_returned_block;
 use crate::interpreter::eval_expr_list;
 
-fn expr_list_debug_str(expressions: &Vec<Expression>) -> String {
-    join(" ", expressions.iter().map(|expr| expr.debug_str()))
+fn expr_list_debug_str(delimiter: &str, expressions: &Vec<Expression>) -> String {
+    join(
+        delimiter,
+        expressions.iter().map(|expr| expr.debug_str()).collect(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,7 +28,7 @@ impl Program {
     }
 
     pub fn debug_str(&self) -> String {
-        return expr_list_debug_str(&self.expressions);
+        return expr_list_debug_str("\n", &self.expressions);
     }
 }
 
@@ -89,19 +92,64 @@ pub enum Expression {
     Map(Rc<RefCell<HashMap<String, Expression>>>),
     ForExpr(ForExpr),
     WhileExpr(WhileExpr),
+    List(List),
+    Access(Access),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Access {
+    pub loc: Loc,
+    pub target: Box<Expression>,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct List {
+    pub items: Vec<Expression>,
+    pub loc: Loc,
+}
+
+impl List {
+    pub fn eval<W: Write>(
+        &self,
+        output: &Rc<RefCell<W>>,
+        scope: &Rc<Scope>,
+    ) -> Result<List, LocError> {
+        let mut items = vec![];
+
+        for expr in &self.items {
+            items.push(expr.eval(output, scope)?);
+        }
+
+        Ok(List {
+            loc: self.loc.clone(),
+            items,
+        })
+    }
+
+    fn as_string<W: Write>(
+        &self,
+        output: &Rc<RefCell<W>>,
+        scope: &Rc<Scope>,
+    ) -> Result<String, LocError> {
+        let mut stringified_items = vec![];
+
+        for item in &self.items {
+            stringified_items.push(item.as_string(&self.loc, output, scope)?);
+        }
+
+        return Ok(format!("[{}]", join(", ", stringified_items)));
+    }
 }
 
 fn expressions_to_debug_str(expressions: &Vec<Expression>) -> String {
-    join(", ", expressions.iter().map(|e| e.debug_str()))
+    join(", ", expressions.iter().map(|e| e.debug_str()).collect())
 }
 
-fn join<I>(sep: &str, mut values: I) -> String
-where
-    I: Iterator<Item = String>,
-{
-    if let Some(s) = values.next() {
-        let mut result = String::from(s);
-        for s in values {
+fn join(sep: &str, values: Vec<String>) -> String {
+    if let Some(s) = values.get(0) {
+        let mut result = s.to_string();
+        for s in values.iter().skip(1) {
             result.push_str(sep);
             result.push_str(&s);
         }
@@ -117,8 +165,13 @@ impl Expression {
             Expression::String(s) => format!("\"{}\"", s.clone()),
             Expression::Int(i) => i.to_string(),
             Expression::FuncCall(_f) => "func_call".to_string(),
+            Expression::List(list) => format!("[{}]", expr_list_debug_str(", ", &list.items)),
+            Expression::Access(access) => format!("{}.{}", access.target.debug_str(), access.key),
             Expression::ForExpr(for_expr) => {
-                let body_debug_str = join("\n", for_expr.body.iter().map(|expr| expr.debug_str()));
+                let body_debug_str = join(
+                    "\n",
+                    for_expr.body.iter().map(|expr| expr.debug_str()).collect(),
+                );
                 format!(
                     "for {} in {}..{} {{ {} }}",
                     for_expr.identifier.ident,
@@ -128,7 +181,14 @@ impl Expression {
                 )
             }
             Expression::WhileExpr(while_expr) => {
-                let body_debug_str = join("\n", while_expr.body.iter().map(|expr| expr.debug_str()));
+                let body_debug_str = join(
+                    "\n",
+                    while_expr
+                        .body
+                        .iter()
+                        .map(|expr| expr.debug_str())
+                        .collect(),
+                );
                 format!(
                     "while {} {{ {} }}",
                     while_expr.condition.debug_str(),
@@ -144,12 +204,12 @@ impl Expression {
                 format!("let {} = {}", var_decl.ident, var_decl.expr.debug_str())
             }
             Expression::ReAssignment(re_assignment) => format!(
-                "{} = {}",
+                "{:#?} = {}",
                 re_assignment.ident,
                 re_assignment.expr.debug_str()
             ),
             Expression::FuncExpr(func_expr) => {
-                let args_str = join(", ", func_expr.args.iter().map(|it| it.clone()));
+                let args_str = join(", ", func_expr.args.iter().map(|it| it.clone()).collect());
                 let body_str = func_expr
                     .expressions
                     .iter()
@@ -221,6 +281,8 @@ impl Expression {
             Expression::Map(_) => "map",
             Expression::ForExpr(_) => "for",
             Expression::WhileExpr(_) => "while",
+            Expression::List(_) => "list",
+            Expression::Access(_) => "access",
         }
     }
 
@@ -278,6 +340,25 @@ impl Expression {
         }
     }
 
+    pub fn get_by_key(&self, key: &str) -> Option<Expression> {
+        match self {
+            Expression::Map(map) => {
+                map.borrow().get(key).cloned()
+            },
+            _ => None,
+        }
+    }
+
+    pub fn set(&self, key: &str, val: Expression) -> Option<()> {
+        match self {
+            Expression::Map(map) => {
+                map.borrow_mut().insert(key.to_string(), val);
+                Some(())
+            },
+            _ => None,
+        }
+    }
+
     pub fn eval<W: Write>(
         &self,
         output: &Rc<RefCell<W>>,
@@ -316,19 +397,28 @@ impl Expression {
                 scope.assign(assignment.ident.clone(), value.clone());
                 Ok(value)
             }
-            Expression::ReAssignment(assignment) => match scope.get(&assignment.ident) {
-                Some(_) => match assignment.expr.eval(output, scope) {
-                    Ok(value) => {
-                        scope.set(assignment.ident.clone(), value.clone())?;
-                        Ok(value)
+            Expression::ReAssignment(re_assignment) => {
+                let assigned_value = re_assignment.expr.eval(output, scope)?;
+                match &re_assignment.ident {
+                    Identifier::Literal(ident) => {
+                        scope.set(re_assignment.loc.clone(), ident.to_string(), assigned_value.clone())?;
+                        Ok(assigned_value)
                     }
-                    Err(err) => Err(err),
-                },
-                None => Err(assignment.loc.error(&format!(
-                    "Attempted to assign undeclared variable '{}'",
-                    assignment.ident
-                ))),
-            },
+                    Identifier::DotAccess(specifiers) => {
+                        let mut container = scope.get(&specifiers[0])
+                            .ok_or_else(|| re_assignment.loc.error("Undefined access"))?;
+                        for i in 1..(specifiers.len() - 1) {
+                            let key = &specifiers[i];
+                            container = container.get_by_key(key)
+                                .ok_or_else(|| re_assignment.loc.error(&format!("Failed to read property '{}'", &key)))?;
+                        }
+                        let key = specifiers.last().unwrap();
+                        container.set(key, assigned_value.clone())
+                            .ok_or_else(|| re_assignment.loc.error(&format!("Failed to set property '{}'", &key)))?;
+                        Ok(assigned_value)
+                    }
+                }
+            }
             Expression::String(string) => Ok(Expression::String(string.clone())),
             Expression::Touple(value) => {
                 if value.len() == 1 {
@@ -371,7 +461,7 @@ impl Expression {
                 }
 
                 return Ok(last);
-            },
+            }
             Expression::WhileExpr(for_expr) => {
                 let condition = &for_expr.condition;
                 let body = &for_expr.body;
@@ -384,7 +474,7 @@ impl Expression {
                 }
 
                 return Ok(last);
-            },
+            }
             Expression::IfExpr(if_expr) => {
                 let condition = if_expr.condition.eager_eval(output, scope)?.as_bool()?;
                 if condition {
@@ -401,6 +491,21 @@ impl Expression {
             }
             Expression::Bool(value) => Ok(Expression::Bool(value.clone())),
             Expression::Null => Ok(Expression::Null),
+            Expression::List(list) => Ok(Expression::List(list.eval(output, scope)?)),
+            Expression::Access(access) => match access.target.eval(output, scope)? {
+                Expression::Map(map) => {
+                    let result = map
+                        .borrow()
+                        .get(&access.key)
+                        .ok_or_else(|| access.loc.error("Not in map"))?
+                        .clone();
+                    Ok(result)
+                }
+                Expression::List(_) => {
+                    todo!()
+                }
+                _ => Err(access.loc.error("Not able to call method on value")),
+            },
             _ => {
                 todo!("Failed to eval expression {:?}", self);
             }
@@ -435,8 +540,10 @@ impl Expression {
             Expression::Bool(value) => Ok(value.to_string()),
             Expression::Null => Ok(String::from("null")),
             Expression::Return(expression) => expression.as_string(loc, output, scope),
+            Expression::List(list) => list.as_string(output, scope),
             // TODO: Split Expression and SimpleExpression
             Expression::FuncCall(_func_call) => todo!(),
+            Expression::Access(_) => todo!(),
             Expression::VarDecl(_var_decl) => todo!(),
             Expression::ReAssignment(_re_assignment) => todo!(),
             Expression::Variable(var) => scope
@@ -515,9 +622,24 @@ pub struct VarDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReAssignment {
-    pub ident: String,
+    pub ident: Identifier,
     pub expr: Expression,
     pub loc: Loc,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Identifier {
+    Literal(String),
+    DotAccess(Vec<String>),
+}
+
+impl Identifier {
+    pub fn debug_str(&self) -> String {
+        match self {
+            Identifier::Literal(string) => string.clone(),
+            Identifier::DotAccess(access) => join(".", access.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -554,7 +676,7 @@ impl Scope {
         expr
     }
 
-    pub fn set(&self, ident: String, expr: Expression) -> Result<Expression, LocError> {
+    pub fn set(&self, loc: Loc, ident: String, expr: Expression) -> Result<Expression, LocError> {
         let val = {
             let values = self.values.borrow();
             values.get(&ident).cloned()
@@ -567,13 +689,17 @@ impl Scope {
                 Ok(expr)
             }
             None => {
-                let s1 = format!(
-                    "Attempted to assign to undefined variable {}",
-                    ident.clone()
-                );
-                let s = s1.as_str();
-                let parent = self.parent.as_ref().expect(s).borrow();
-                parent.set(ident, expr)
+                let parent = self
+                    .parent
+                    .as_ref()
+                    .ok_or_else(|| {
+                        loc.error(&format!(
+                            "Attempted to reassign undeclared variable '{}'",
+                            ident.clone()
+                        ))
+                    })?
+                    .borrow();
+                parent.set(loc, ident, expr)
             }
         }
     }
@@ -657,6 +783,7 @@ pub type Tokens = Vec<Token>;
 pub struct LocError {
     pub message: String,
     pub loc: Loc,
+    //pub ignorable: bool,
 }
 
 #[derive(Debug, PartialEq)]

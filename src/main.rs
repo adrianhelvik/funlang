@@ -19,7 +19,7 @@ pub fn eval(source: &str) -> Result<(), SyntaxError> {
     //println!("lexed in {} seconds", start.elapsed().as_secs_f32());
 
     //let start = Instant::now();
-    match parse(tokens) {
+    match parse(&tokens) {
         Ok(program) => {
             //println!("parsed in {} seconds", start.elapsed().as_secs_f32());
             let output = Rc::new(RefCell::new(std::io::stdout()));
@@ -39,7 +39,7 @@ pub fn eval(source: &str) -> Result<(), SyntaxError> {
 pub fn test_eval(source: &str) -> String {
     let output = Rc::new(RefCell::new(Vec::new()));
     let tokens = lex(source);
-    match parse(tokens) {
+    match parse(&tokens) {
         Ok(program) => {
             match interpreter::eval_program(&program, &output) {
                 Ok(_) => {}
@@ -80,7 +80,7 @@ pub mod tests {
 
     #[allow(dead_code)]
     pub fn lax(source: &str) -> Program {
-        parse(lex(source)).unwrap()
+        parse(&lex(source)).unwrap()
     }
 
     #[test]
@@ -467,9 +467,9 @@ pub mod tests {
         let source = r#"
             let my_map = Map()
 
-            my_map("message", "Hello world!")
+            my_map.message = "Hello world!"
 
-            let value = my_map("message")
+            let value = my_map.message
 
             print value
         "#;
@@ -659,6 +659,8 @@ pub mod tests {
             print and(a, b)
         "#;
 
+        println!("{:#?}", parse(&lex(source)));
+
         assert_eq!(test_eval(source), "true");
     }
 
@@ -729,7 +731,6 @@ pub mod tests {
 
     mod error_messages {
         use super::*;
-        use pretty_assertions::assert_eq;
 
         #[test]
         fn incorrect_not_equals() {
@@ -737,7 +738,7 @@ pub mod tests {
 
             let mut expected = String::new();
             expected.push_str("Error: if 1 != 2 { println\"Hello world\" }\n");
-            expected.push_str("            ^ [1:6] Attempted to assign undeclared variable '!'");
+            expected.push_str("            ^ [1:6] Attempted to reassign undeclared variable '!'");
 
             let actual = test_eval(&source);
 
@@ -756,8 +757,8 @@ pub mod tests {
         }
     }
 
-    mod type_builting {
-        use crate::test_eval;
+    mod type_builtins {
+        use super::*;
         use pretty_assertions::assert_eq;
 
         #[test]
@@ -772,7 +773,7 @@ pub mod tests {
         #[test]
         fn it_can_get_the_type_of_a_function_expression() {
             let source = r#"
-                print type () {}
+                print type(() {})
             "#;
 
             assert_eq!(test_eval(source), "closure");
@@ -814,6 +815,32 @@ pub mod tests {
             "#;
 
             assert_eq!(test_eval(source), "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n");
+        }
+    }
+
+    mod lists {
+        use super::*;
+        use pretty_assertions::assert_eq;
+
+        #[test]
+        fn it_can_create_a_list() {
+            let source = r#"
+                let my_list = [1, 2, add(1, 2)]
+                print my_list
+            "#;
+
+            assert_eq!(test_eval(source), "[1, 2, 3]");
+        }
+
+        //#[test]
+        fn it_can_push_to_a_list() {
+            let source = r#"
+                let my_list = [1, 2, add(1, 2)]
+                my_list.push(4)
+                print my_list
+            "#;
+
+            assert_eq!(test_eval(source), "[1, 2, 3, 4]");
         }
     }
 

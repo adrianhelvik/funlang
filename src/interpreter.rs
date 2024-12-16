@@ -171,7 +171,7 @@ mod tests {
     }
 
     fn eval(code: &str) -> String {
-        let program = parse(lex(code)).unwrap();
+        let program = parse(&lex(code)).unwrap();
         eval_ast(&program)
     }
 
