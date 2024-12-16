@@ -16,47 +16,25 @@ macro_rules! either {
 }
 
 fn parse_access_target_expr(state: &State) -> ER {
-    either!(
-        state,
-        parse_str,
-        parse_int,
-        parse_touple,
-        parse_list,
-        parse_variable,
-    );
+    either!(state, parse_variable, parse_touple,);
 
     empty()
 }
 
-/// Very simple expressions can be passed to functions.
-fn parse_func_call_param_expr(state: &State) -> ER {
+fn parse_simple_expr(state: &State) -> ER {
     either!(
         state,
         parse_str,
         parse_int,
-        parse_access,
         parse_func_call,
         parse_touple,
         parse_list,
-        parse_variable,
-    );
 
-    empty()
-}
-
-/// Simple expressions can be used in for-, while, and if conditions
-/// and anywhere else.
-fn parse_condition_expr(state: &State) -> ER {
-    either!(
-        state,
-        parse_str,
-        parse_int,
+        // precedence 0
         parse_access,
-        parse_touple,
-        parse_list,
-        parse_func_call,
         parse_variable,
     );
+
     empty()
 }
 
@@ -68,20 +46,25 @@ fn parse_next_expr(state: &State) -> ER {
 
     either!(
         state,
-        parse_str,
-        parse_int,
+        // Precedence 1
         parse_if_expr,
         parse_for_expr,
         parse_while_expr,
         parse_var_decl,
         parse_reassignment,
-        parse_access,
-        parse_str,
         parse_return_expr,
         parse_func_expr,
         parse_func_call,
-        parse_variable,
         parse_list,
+
+        parse_str,
+        parse_int,
+        parse_touple,
+        parse_list,
+
+        // precedence 0
+        parse_access,
+        parse_variable,
     );
 
     empty()
@@ -130,6 +113,7 @@ fn parse_state(state: State) -> Result<Program, LocError> {
 
     if state.len() > 0 {
         let token = state.get(0);
+        println!("Parsed expressions: {:#?}", expressions);
         return Err(token
             .loc
             .error(format!("Unexpected token '{}'", token.value).as_ref()));
@@ -283,7 +267,7 @@ fn parse_var_decl(state: &State) -> ER {
 fn parse_if_expr(state: &State) -> ER {
     let (if_kw, state) = pick("if", state)?;
 
-    let (condition, state) = match parse_condition_expr(&state) {
+    let (condition, state) = match parse_simple_expr(&state) {
         Ok((condition, state)) => (condition, state),
         Err(Some(err)) => return Err(Some(err)),
         Err(None) => {
@@ -354,10 +338,10 @@ fn parse_for_expr(state: &State) -> ER {
     let state = take("for", &state)?;
     let (ident, state) = take_ident_token(&state)?;
     let state = require("in", &state, "Missing 'in' keyword in for-loop")?;
-    let (start_expr, state) = parse_condition_expr(&state)?;
+    let (start_expr, state) = parse_simple_expr(&state)?;
     println!("{:#?}", start_expr);
     let state = take("..", &state)?;
-    let (end_expr, state) = parse_condition_expr(&state)?;
+    let (end_expr, state) = parse_simple_expr(&state)?;
     let state = require("{", &state, "Missing opening brace")?;
     let (expressions, state) = parse_expr_list(&state)?;
     let state = skip_all("\n", state);
@@ -375,7 +359,7 @@ fn parse_for_expr(state: &State) -> ER {
 
 fn parse_while_expr(state: &State) -> ER {
     let state = take("while", &state)?;
-    let (condition, state) = parse_condition_expr(&state)?;
+    let (condition, state) = parse_simple_expr(&state)?;
     let state = require("{", &state, "Missing opening brace in while-loop")?;
     let (expressions, state) = parse_expr_list(&state)?;
     let state = skip_all("\n", state);
@@ -389,7 +373,7 @@ fn parse_while_expr(state: &State) -> ER {
     Ok((Expression::WhileExpr(while_expr), state))
 }
 
-fn take_identifier(state: &State) -> ParseResult<(Identifier, Loc)> {
+fn take_identifier(state: &State) -> ParseResult<Identifier> {
     let (first, state) = take_ident_token(state)?;
     let mut identifiers = vec![first];
     let mut state = state;
@@ -400,27 +384,21 @@ fn take_identifier(state: &State) -> ParseResult<(Identifier, Loc)> {
         identifiers.push(successive);
     }
 
-    if identifiers.len() > 1 {
-        let strings = identifiers.iter().map(|token| token.value.clone()).collect();
-        return Ok(((Identifier::DotAccess(strings), identifiers[0].loc.clone()), state));
-    }
-
-    Ok((
-        (
-            Identifier::Literal(identifiers[0].value.clone()),
-            identifiers[0].loc.clone(),
-        ),
+    return Ok((
+        Identifier {
+            accessors: identifiers,
+        },
         state,
-    ))
+    ));
 }
 
 fn parse_reassignment(state: &State) -> ER {
-    let ((ident, loc), state) = take_identifier(state)?;
+    let (ident, state) = take_identifier(state)?;
     let state = take("=", &state)?;
     let (expr, state) = parse_next_expr(&state)?;
 
     Ok((
-        Expression::ReAssignment(Box::new(ReAssignment { ident, expr, loc })),
+        Expression::ReAssignment(Box::new(ReAssignment { ident, expr })),
         state,
     ))
 }
@@ -492,22 +470,27 @@ fn require_ident(state: &State) -> ParseResult<Token> {
 }
 
 fn is_ident(token: &Token) -> bool {
+    if let Some(first_char) = token.value.chars().collect::<Vec<char>>().get(0) {
+        if *first_char == '\"' {
+            return false;
+        }
+        if first_char.is_numeric() {
+            return false;
+        }
+    }
     match token.value.as_ref() {
-        "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," | ".." | "=" => false,
+        "\n" | "(" | ")" | "{" | "}" | "[" | "]" | "," | ".." | "=" | "." => false,
         _ => true,
     }
 }
 
 fn parse_func_call(state: &State) -> Result<(Expression, State), ParseError> {
-    let (token, state) = take_ident_token(state)?;
-    let (arg, state) = parse_func_call_param_expr(&state)?;
+    let (ident, state) = take_identifier(state)?;
+    let (arg, state) = parse_simple_expr(&state)?;
 
     Ok((
         Expression::FuncCall(FuncCall {
-            ident: Variable {
-                ident: token.value,
-                loc: token.loc,
-            },
+            ident,
             arg: Box::new(arg),
         }),
         state,
@@ -735,18 +718,17 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_a_unary_func_call() {
-        let (expression, state) = parse_next_expr(&State::new(vec![
-            Token::from("foo", Loc::new(1, 1)),
-            Token::from("123", Loc::new(1, 5)),
-        ]))
-        .unwrap();
+        let foo_token = Token::from("foo", Loc::new(1, 1));
+        let arg_token = Token::from("123", Loc::new(1, 5));
+
+        let (expression, state) =
+            parse_next_expr(&State::new(vec![foo_token.clone(), arg_token])).unwrap();
 
         assert_eq!(
             expression,
             Expression::FuncCall(FuncCall {
-                ident: Variable {
-                    ident: String::from("foo"),
-                    loc: Loc::new(1, 1),
+                ident: Identifier {
+                    accessors: vec![foo_token]
                 },
                 arg: Box::new(Expression::Int(123)),
             })
@@ -763,14 +745,14 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_a_program_with_a_func_call() {
-        let ast = parse(&lex("print \"Hello world\"")).unwrap();
+        let tokens = lex("print \"Hello world\"");
+        let ast = parse(&tokens).unwrap();
 
         assert_eq!(
             ast,
             Program::new(vec![Expression::FuncCall(FuncCall {
-                ident: Variable {
-                    ident: String::from("print"),
-                    loc: Loc::new(1, 1),
+                ident: Identifier {
+                    accessors: vec![tokens[0].clone()]
                 },
                 arg: Box::new(Expression::String(String::from("Hello world"))),
             })])
@@ -789,16 +771,14 @@ mod tests {
             ast,
             Program::new(vec![
                 Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(1, 1),
+                    ident: Identifier {
+                        accessors: vec![tokens[0].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
                 }),
                 Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(2, 1),
+                    ident: Identifier {
+                        accessors: vec![tokens[3].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Foo bar"))),
                 }),
@@ -818,16 +798,14 @@ mod tests {
             ast,
             Program::new(vec![
                 Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(1, 1),
+                    ident: Identifier {
+                        accessors: vec![tokens[0].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
                 }),
                 Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(1, 21),
+                    ident: Identifier {
+                        accessors: vec![tokens[2].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Foo bar"))),
                 }),
@@ -837,15 +815,14 @@ mod tests {
 
     #[test]
     pub fn it_can_parse_a_binary_func_call() {
-        let (func_call, _state) =
-            parse_func_call(&State::new(lex("print(\"Hello\", \"world\")"))).unwrap();
+        let tokens = lex("print(\"Hello\", \"world\")");
+        let (func_call, _state) = parse_func_call(&State::new(tokens.clone())).unwrap();
 
         assert_eq!(
             func_call,
             Expression::FuncCall(FuncCall {
-                ident: Variable {
-                    ident: String::from("print"),
-                    loc: Loc::new(1, 1),
+                ident: Identifier {
+                    accessors: vec![tokens[0].clone()]
                 },
                 arg: Box::new(Expression::Touple(vec![
                     Expression::String(String::from("Hello")),
@@ -891,14 +868,14 @@ mod tests {
 
     #[test]
     pub fn it_can_call_print_with_a_variable() {
-        let (func_call, _state) = parse_func_call(&State::new(lex("print x"))).unwrap();
+        let tokens = lex("print x");
+        let (func_call, _state) = parse_func_call(&State::new(tokens.clone())).unwrap();
 
         assert_eq!(
             func_call,
             Expression::FuncCall(FuncCall {
-                ident: Variable {
-                    ident: String::from("print"),
-                    loc: Loc::new(1, 1)
+                ident: Identifier {
+                    accessors: vec![tokens[0].clone()]
                 },
                 arg: Box::new(Expression::Variable(Variable::new(Token::from(
                     "x",
@@ -926,13 +903,16 @@ mod tests {
     fn simple_reassignment() {
         let source = "x = 1";
 
+        let tokens = lex(source);
+
         assert_eq!(
-            parse(&lex(source)).unwrap(),
+            parse(&tokens).unwrap(),
             Program::new(vec![Expression::ReAssignment(Box::new(ReAssignment {
-                ident: Identifier::Literal(String::from("x")),
+                ident: Identifier {
+                    accessors: vec![tokens[0].clone()]
+                },
                 expr: Expression::Int(1),
-                loc: Loc { line: 1, column: 1 },
-            })),])
+            }))])
         );
     }
 
@@ -944,8 +924,10 @@ mod tests {
             print x
         "#;
 
+        let tokens = lex(source);
+
         assert_eq!(
-            parse(&lex(source)).unwrap(),
+            parse(&tokens).unwrap(),
             Program::new(vec![
                 Expression::VarDecl(Box::new(VarDecl {
                     ident: String::from("x"),
@@ -956,17 +938,20 @@ mod tests {
                     },
                 })),
                 Expression::ReAssignment(Box::new(ReAssignment {
-                    ident: Identifier::Literal(String::from("x")),
-                    expr: Expression::Int(2),
-                    loc: Loc {
-                        line: 3,
-                        column: 13,
+                    ident: Identifier {
+                        accessors: vec![Token {
+                            value: "x".to_string(),
+                            loc: Loc::new(3, 13),
+                        }]
                     },
+                    expr: Expression::Int(2),
                 })),
                 Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(4, 13)
+                    ident: Identifier {
+                        accessors: vec![Token {
+                            value: "print".to_string(),
+                            loc: Loc::new(4, 13),
+                        }]
                     },
                     arg: Box::new(Expression::Variable(Variable::new(Token::from(
                         "x",
@@ -1017,9 +1002,11 @@ mod tests {
             Expression::FuncExpr(FuncExpr {
                 args: Vec::new(),
                 expressions: vec![Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(3, 17)
+                    ident: Identifier {
+                        accessors: vec![Token {
+                            value: String::from("print"),
+                            loc: Loc::new(3, 17)
+                        }]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
                 })],
@@ -1048,9 +1035,11 @@ mod tests {
             Program::new(vec![Expression::FuncExpr(FuncExpr {
                 args: vec![String::from("x"), String::from("y")],
                 expressions: vec![Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(2, 22)
+                    ident: Identifier {
+                        accessors: vec![Token {
+                            value: String::from("print"),
+                            loc: Loc::new(2, 22)
+                        }]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
                 })],
@@ -1071,9 +1060,11 @@ mod tests {
             program,
             Program::new(vec![
                 Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: Variable::new(Token::from("print", Loc::new(2, 13))).ident,
-                        loc: Loc::new(2, 13)
+                    ident: Identifier {
+                        accessors: vec![Token {
+                            value: "print".to_string(),
+                            loc: Loc::new(2, 13),
+                        }]
                     },
                     arg: Box::new(Expression::Variable(Variable::new(Token::from(
                         "a",
@@ -1081,9 +1072,11 @@ mod tests {
                     )))),
                 }),
                 Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: String::from("print"),
-                        loc: Loc::new(3, 13)
+                    ident: Identifier {
+                        accessors: vec![Token {
+                            value: String::from("print"),
+                            loc: Loc::new(3, 13),
+                        }]
                     },
                     arg: Box::new(Expression::Variable(Variable::new(Token::from(
                         "b",
@@ -1157,7 +1150,8 @@ mod tests {
             }
         "#;
 
-        let program = parse(&lex(source)).unwrap();
+        let tokens = lex(source);
+        let program = parse(&tokens).unwrap();
 
         assert_eq!(
             program,
@@ -1169,9 +1163,11 @@ mod tests {
                 then_expr: Expression::FuncExpr(FuncExpr {
                     args: Vec::new(),
                     expressions: vec![Expression::FuncCall(FuncCall {
-                        ident: Variable {
-                            ident: String::from("print"),
-                            loc: Loc::new(3, 17)
+                        ident: Identifier {
+                            accessors: vec![Token {
+                                value: "print".to_string(),
+                                loc: Loc::new(3, 17),
+                            }]
                         },
                         arg: Box::new(Expression::String(String::from("Hello world"))),
                     })],
@@ -1288,15 +1284,15 @@ mod tests {
     pub fn it_can_parse_a_while_loop() {
         let source = r#"while lt(i, 10) {123}"#;
 
-        let program = parse(&lex(source)).unwrap();
+        let tokens = lex(source);
+        let program = parse(&tokens).unwrap();
 
         assert_eq!(
             program,
             Program::new(vec![Expression::WhileExpr(WhileExpr {
                 condition: Box::new(Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: "lt".to_string(),
-                        loc: Loc { line: 1, column: 7 },
+                    ident: Identifier {
+                        accessors: vec![tokens[1].clone()]
                     },
                     arg: Box::new(Expression::Touple(vec![
                         Expression::Variable(Variable {
@@ -1417,23 +1413,22 @@ mod tests {
     #[test]
     fn nested_func_calls() {
         let source = r#"eq(1, x())"#;
+        let tokens = lex(source);
 
-        let program = parse(&lex(source)).unwrap();
+        let program = parse(&tokens).unwrap();
 
         assert_eq!(
             program,
             Program {
                 expressions: vec![Expression::FuncCall(FuncCall {
-                    ident: Variable {
-                        ident: "eq".to_string(),
-                        loc: Loc { line: 1, column: 1 },
+                    ident: Identifier {
+                        accessors: vec![tokens[0].clone()]
                     },
                     arg: Box::new(Expression::Touple(vec![
                         Expression::Int(1),
                         Expression::FuncCall(FuncCall {
-                            ident: Variable {
-                                ident: "x".to_string(),
-                                loc: Loc { line: 1, column: 7 },
+                            ident: Identifier {
+                                accessors: vec![tokens[4].clone()]
                             },
                             arg: Box::new(Expression::Touple(vec![]))
                         })
@@ -1471,40 +1466,50 @@ mod tests {
         #[test]
         fn assignment() {
             let source = r#"foo.bar = 123"#;
+            let tokens = lex(source);
 
-            let ast = parse(&lex(source)).unwrap();
+            let ast = parse(&tokens).unwrap();
 
             assert_eq!(
                 ast,
                 Program {
                     expressions: vec![Expression::ReAssignment(Box::new(ReAssignment {
-                        loc: Loc::new(1, 1),
-                        ident: Identifier::DotAccess(vec!["foo".to_string(), "bar".to_string(),]),
+                        ident: Identifier {
+                            accessors: vec![tokens[0].clone(), tokens[2].clone()]
+                        },
                         expr: Expression::Int(123),
                     }))],
                 },
             );
         }
 
-        /*
         #[test]
         fn method_call() {
             let source = r#"foo.bar()"#;
+            let tokens = lex(source);
 
-            let ast = parse(&lex(source)).unwrap();
+            let ast = parse(&tokens).unwrap();
 
             assert_eq!(
                 ast,
                 Program {
-                    expressions: vec![
-                        Expression::FuncCall(FuncCall {
-                            ident: Identifier::DotAccess(vec!["foo".to_string(), "bar".to_string()]),
-                            arg: Box::new(Expression::Touple(vec![])),
-                        })
-                    ]
+                    expressions: vec![Expression::FuncCall(FuncCall {
+                        ident: Identifier {
+                            accessors: vec![
+                                Token {
+                                    value: "foo".to_string(),
+                                    loc: Loc::new(1, 1),
+                                },
+                                Token {
+                                    value: "bar".to_string(),
+                                    loc: Loc::new(1, 5),
+                                },
+                            ]
+                        },
+                        arg: Box::new(Expression::Touple(vec![])),
+                    })]
                 },
             );
         }
-*/
     }
 }

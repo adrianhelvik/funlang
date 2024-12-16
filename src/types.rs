@@ -34,17 +34,8 @@ impl Program {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncCall {
-    pub ident: Variable,
+    pub ident: Identifier,
     pub arg: Box<Expression>,
-}
-
-impl FuncCall {
-    pub fn new(variable: Variable, arg: Expression) -> FuncCall {
-        FuncCall {
-            ident: variable,
-            arg: Box::new(arg),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,7 +238,7 @@ impl Expression {
             }
             Expression::Bool(value) => value.to_string(),
             Expression::Block(func_call) => {
-                format!("{} {}", func_call.ident.ident, func_call.arg.debug_str())
+                format!("{} {}", func_call.ident.debug_str(), func_call.arg.debug_str())
             }
             Expression::Map(map) => {
                 let map_str = map
@@ -349,13 +340,13 @@ impl Expression {
         }
     }
 
-    pub fn set(&self, key: &str, val: Expression) -> Option<()> {
+    pub fn set(&self, key: &str, val: Expression) -> bool {
         match self {
             Expression::Map(map) => {
                 map.borrow_mut().insert(key.to_string(), val);
-                Some(())
+                true
             },
-            _ => None,
+            _ => false,
         }
     }
 
@@ -365,31 +356,32 @@ impl Expression {
         scope: &Rc<Scope>,
     ) -> Result<Expression, LocError> {
         match self {
-            Expression::FuncCall(func_call) => match func_call.ident.ident.as_ref() {
-                "print" => fun_print(&func_call, output, scope),
-                "println" => fun_println(&func_call, output, scope),
-                "add" => fun_add(scope, output, &func_call),
-                "sub" => fun_sub(scope, output, &func_call),
-                "eq" => fun_eq(scope, output, &*func_call.arg),
-                "str" => fun_str(scope, output, &*func_call),
-                "not" => fun_not(scope, output, &*func_call),
-                "lte" => fun_lte(scope, output, &*func_call),
-                "lt" => fun_lt(scope, output, &*func_call),
-                "gte" => fun_gte(scope, output, &*func_call),
-                "or" => fun_or(&scope, output, &*func_call),
-                "type" => fun_type(&scope, output, &func_call),
-                "etype" => fun_etype(&*func_call.arg),
-                "and" => fun_and(&scope, output, &*func_call),
-                "modulo" => fun_modulo(scope, output, &*func_call),
-                "Map" => fun_create_map(scope, output, &*func_call.arg),
-                "ret" | "return" => {
-                    let value = func_call.arg.eval(output, scope)?;
-                    Ok(Expression::Return(Box::new(value)))
+            Expression::FuncCall(func_call) => {
+                if func_call.ident.accessors.len() == 1 {
+                    let name = func_call.ident.accessors[0].value.clone();
+                    match name.as_ref() {
+                        "print" => return fun_print(&func_call, output, scope),
+                        "println" => return fun_println(&func_call, output, scope),
+                        "add" => return fun_add(scope, output, &func_call),
+                        "sub" => return fun_sub(scope, output, &func_call),
+                        "eq" => return fun_eq(scope, output, &*func_call.arg),
+                        "str" => return fun_str(scope, output, &*func_call),
+                        "not" => return fun_not(scope, output, &*func_call),
+                        "lte" => return fun_lte(scope, output, &*func_call),
+                        "lt" => return fun_lt(scope, output, &*func_call),
+                        "gte" => return fun_gte(scope, output, &*func_call),
+                        "or" => return fun_or(&scope, output, &*func_call),
+                        "type" => return fun_type(&scope, output, &func_call),
+                        "etype" => return fun_etype(&*func_call.arg),
+                        "and" => return fun_and(&scope, output, &*func_call),
+                        "modulo" => return fun_modulo(scope, output, &*func_call),
+                        "Map" => return fun_create_map(scope, output, &*func_call.arg),
+                        _ => {}
+                    }
                 }
-                _ => {
-                    let expr = call_func_expr(func_call, output, scope);
-                    Ok(expr?.strip_return())
-                }
+
+                let expr = call_func_expr(func_call, output, scope);
+                Ok(expr?.strip_return())
             },
             Expression::Block(func_call) => call_func_expr(func_call, output, scope),
             Expression::VarDecl(assignment) => {
@@ -397,27 +389,28 @@ impl Expression {
                 scope.assign(assignment.ident.clone(), value.clone());
                 Ok(value)
             }
-            Expression::ReAssignment(re_assignment) => {
-                let assigned_value = re_assignment.expr.eval(output, scope)?;
-                match &re_assignment.ident {
-                    Identifier::Literal(ident) => {
-                        scope.set(re_assignment.loc.clone(), ident.to_string(), assigned_value.clone())?;
-                        Ok(assigned_value)
-                    }
-                    Identifier::DotAccess(specifiers) => {
-                        let mut container = scope.get(&specifiers[0])
-                            .ok_or_else(|| re_assignment.loc.error("Undefined access"))?;
-                        for i in 1..(specifiers.len() - 1) {
-                            let key = &specifiers[i];
-                            container = container.get_by_key(key)
-                                .ok_or_else(|| re_assignment.loc.error(&format!("Failed to read property '{}'", &key)))?;
-                        }
-                        let key = specifiers.last().unwrap();
-                        container.set(key, assigned_value.clone())
-                            .ok_or_else(|| re_assignment.loc.error(&format!("Failed to set property '{}'", &key)))?;
-                        Ok(assigned_value)
-                    }
+            Expression::ReAssignment(reassignment) => {
+                let assigned_value = reassignment.expr.eval(output, scope)?;
+
+                if reassignment.ident.accessors.len() == 1 {
+                    let token = reassignment.ident.accessors[0].clone();
+                    scope.set(token.loc, token.value, assigned_value.clone())?;
+                    return Ok(assigned_value.clone());
                 }
+
+                let mut container = scope.get(&reassignment.ident.accessors[0].value)
+                    .ok_or_else(|| reassignment.ident.accessors[0].loc.error("Undefined access"))?;
+
+                for i in 1..(reassignment.ident.accessors.len() - 1) {
+                    let token = &reassignment.ident.accessors[i];
+                    container = container.get_by_key(&token.value)
+                        .ok_or_else(|| token.loc.error(&format!("Failed to read property '{}'", &token.value)))?;
+                }
+                let token = reassignment.ident.accessors.last().unwrap();
+                if !container.set(&token.value, assigned_value.clone()) {
+                    return Err(reassignment.ident.accessors[0].loc.error(&format!("Failed to set property '{}'", &token.value)));
+                }
+                Ok(assigned_value)
             }
             Expression::String(string) => Ok(Expression::String(string.clone())),
             Expression::Touple(value) => {
@@ -624,21 +617,24 @@ pub struct VarDecl {
 pub struct ReAssignment {
     pub ident: Identifier,
     pub expr: Expression,
-    pub loc: Loc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Identifier {
-    Literal(String),
-    DotAccess(Vec<String>),
+pub struct Identifier {
+    pub accessors: Vec<Token>,
 }
 
 impl Identifier {
     pub fn debug_str(&self) -> String {
-        match self {
-            Identifier::Literal(string) => string.clone(),
-            Identifier::DotAccess(access) => join(".", access.clone()),
-        }
+        join(".", self.accessors.iter().map(|t| t.value.clone()).collect())
+    }
+
+    pub fn error(&self, message: &str) -> LocError {
+        self.accessors[0].loc.error(message)
+    }
+
+    pub fn loc(&self) -> Loc {
+        self.accessors[0].loc.clone()
     }
 }
 

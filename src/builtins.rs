@@ -12,7 +12,7 @@ pub fn fun_add<W: Write>(
     let mut sum = 0i64;
 
     for arg in args {
-        sum += arg.as_int(&func_call.ident.loc, output, scope)?;
+        sum += arg.as_int(&func_call.ident.loc(), output, scope)?;
     }
 
     Ok(Expression::Int(sum))
@@ -27,10 +27,10 @@ pub fn fun_sub<W: Write>(
 
     let mut sum = args.get(0)
         .ok_or(func_call.ident.error("At least one argument is required"))?
-        .as_int(&func_call.ident.loc, output, scope)?;
+        .as_int(&func_call.ident.loc(), output, scope)?;
 
     for i in 1..args.len() {
-        sum -= args[i].as_int(&func_call.ident.loc, output, scope)?;
+        sum -= args[i].as_int(&func_call.ident.loc(), output, scope)?;
     }
 
     Ok(Expression::Int(sum))
@@ -64,7 +64,7 @@ pub fn fun_str<W: Write>(
             .arg
             .eval(output, scope)?
             .eval(output, scope)?
-            .as_string(&func_call.ident.loc, output, scope)?,
+            .as_string(&func_call.ident.loc(), output, scope)?,
     ))
 }
 
@@ -90,9 +90,9 @@ pub fn fun_lte<W: Write>(
     let values = func_call.arg.eval(output, scope)?.as_vec();
 
     if values.len() > 0 {
-        let mut first = values[0].eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
+        let mut first = values[0].eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
         for i in 1..values.len() {
-            let second = values[i].eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
+            let second = values[i].eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
             if !(first <= second) {
                 return Ok(Expression::Bool(false));
             }
@@ -111,9 +111,9 @@ pub fn fun_lt<W: Write>(
     let values = func_call.arg.eval(output, scope)?.as_vec();
 
     if values.len() > 0 {
-        let mut first = values[0].eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
+        let mut first = values[0].eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
         for i in 1..values.len() {
-            let second = values[i].eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
+            let second = values[i].eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
             if !(first < second) {
                 return Ok(Expression::Bool(false));
             }
@@ -132,9 +132,9 @@ pub fn fun_gte<W: Write>(
     let values = func_call.arg.eval(output, scope)?.as_vec();
 
     if values.len() > 0 {
-        let mut first = values[0].eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
+        let mut first = values[0].eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
         for i in 1..values.len() {
-            let second = values[i].eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
+            let second = values[i].eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
             if !(first >= second) {
                 return Ok(Expression::Bool(false));
             }
@@ -159,7 +159,7 @@ pub fn fun_print<W: Write>(
     scope: &Rc<Scope>,
 ) -> Result<Expression, LocError> {
     let value = func_call.arg.eval(output, scope)?;
-    let result = value.as_string(&func_call.ident.loc, output, scope)?;
+    let result = value.as_string(&func_call.ident.loc(), output, scope)?;
     write!(output.borrow_mut(), "{}", &result).unwrap();
     Ok(Expression::Null)
 }
@@ -170,7 +170,7 @@ pub fn fun_println<W: Write>(
     scope: &Rc<Scope>,
 ) -> Result<Expression, LocError> {
     let value = func_call.arg.eval(output, scope)?;
-    let result = value.as_string(&func_call.ident.loc, output, scope)?;
+    let result = value.as_string(&func_call.ident.loc(), output, scope)?;
     writeln!(output.borrow_mut(), "{}", &result).unwrap();
     Ok(Expression::Null)
 }
@@ -236,8 +236,8 @@ pub fn fun_modulo<W: Write>(
         .require_two_touple()
         .ok_or(func_call.ident.error("Expected two arguments"))?;
 
-    let first = first.eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
-    let second = second.eval(output, scope)?.as_int(&func_call.ident.loc, output, scope)?;
+    let first = first.eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
+    let second = second.eval(output, scope)?.as_int(&func_call.ident.loc(), output, scope)?;
 
     return Ok(Expression::Int(first % second));
 }

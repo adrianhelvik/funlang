@@ -45,11 +45,9 @@ pub fn eval_expr_and_call_returned_block<W: Write>(
                 Expression::FuncExpr(closure.func_expr),
             );
             let child_scope = Rc::new(child_scope);
+            // TODO: Consider if I want this
             let value = Expression::Block(FuncCall {
-                ident: Variable {
-                    ident: String::from("__block__"),
-                    loc: Loc::new(0, 0),
-                },
+                ident: Identifier { accessors: vec![Token { value: "__block__".to_string(), loc: Loc::new(0, 0) }] },
                 arg: Box::new(Expression::Null),
             })
             .eval(output, &child_scope)?;
@@ -61,36 +59,48 @@ pub fn eval_expr_and_call_returned_block<W: Write>(
     }
 }
 
+pub fn lookup(scope: &Rc<Scope>, ident: &Identifier) -> Result<(Expression, Loc), LocError> {
+    let mut value = scope.get(&ident.accessors[0].value)
+        .ok_or_else(|| ident.accessors[0].loc.error("Failed to look up"))?;
+
+    for i in 1..ident.accessors.len() {
+        let token = &ident.accessors[i];
+        value = value.get_by_key(&token.value)
+            .ok_or_else(|| token.loc.error("Failed to look up"))?
+    }
+
+    Ok((value, ident.accessors.last().unwrap().loc.clone()))
+}
+
 pub fn call_func_expr<W: Write>(
     func_call: &FuncCall,
     output: &Rc<RefCell<W>>,
     scope: &Rc<Scope>,
 ) -> Result<Expression, LocError> {
-    if let Some(expression) = scope.get(&func_call.ident.ident) {
-        match expression {
-            Expression::Closure(closure) => call_func(
-                &closure.func_expr,
-                &func_call,
-                output,
-                &closure.scope,
-                scope,
-            ),
-            Expression::FuncExpr(func_expr) => {
-                call_func(&func_expr, &func_call, output, scope, scope)
-            }
-            Expression::Map(map) => call_map(&map, func_call, output, scope),
-            expression => Err(func_call.ident.loc.error(&format!(
-                "expression of type '{}' is not callable. (value = {})",
-                expression.type_str(),
-                expression.debug_str()
-            ))),
+    let (expression, loc) = lookup(scope, &func_call.ident)?;
+
+    match expression {
+        Expression::Closure(closure) => call_func(
+            &closure.func_expr,
+            &func_call,
+            output,
+            &closure.scope,
+            scope,
+        ),
+        Expression::FuncExpr(func_expr) => {
+            call_func(&func_expr, &func_call, output, scope, scope)
         }
-    } else {
-        func_call.ident.not_defined_err()
+        Expression::Map(map) => call_map(&loc, &map, func_call, output, scope),
+        expression => Err(loc.error(&format!(
+            "expression of type '{}' is not callable. (value = {})",
+            expression.type_str(),
+            expression.debug_str()
+        ))),
     }
 }
 
 fn call_map<W: Write>(
+    loc: &Loc,
     map: &Rc<RefCell<HashMap<String, Expression>>>,
     func_call: &FuncCall,
     output: &Rc<RefCell<W>>,
@@ -103,7 +113,7 @@ fn call_map<W: Write>(
             let key =
                 args[0]
                     .eval(output, scope)?
-                    .as_string(&func_call.ident.loc, output, scope)?;
+                    .as_string(loc, output, scope)?;
             let val = match map.borrow().get(&key) {
                 Some(expr) => expr.clone(),
                 None => Expression::Null,
@@ -114,7 +124,7 @@ fn call_map<W: Write>(
             let key =
                 args[0]
                     .eval(output, scope)?
-                    .as_string(&func_call.ident.loc, output, scope)?;
+                    .as_string(loc, output, scope)?;
             let val = args[1].eval(output, scope)?;
             map.borrow_mut().insert(key, val.clone());
             Ok(val)
