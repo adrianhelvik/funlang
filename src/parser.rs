@@ -29,7 +29,6 @@ fn parse_simple_expr(state: &State) -> ER {
         parse_func_call,
         parse_touple,
         parse_list,
-
         // precedence 0
         parse_access,
         parse_variable,
@@ -47,6 +46,7 @@ fn parse_next_expr(state: &State) -> ER {
     either!(
         state,
         // Precedence 1
+        parse_import_expr,
         parse_if_expr,
         parse_for_expr,
         parse_while_expr,
@@ -56,12 +56,10 @@ fn parse_next_expr(state: &State) -> ER {
         parse_func_expr,
         parse_func_call,
         parse_list,
-
         parse_str,
         parse_int,
         parse_touple,
         parse_list,
-
         // precedence 0
         parse_access,
         parse_variable,
@@ -429,7 +427,7 @@ fn parse_touple(state: &State) -> Result<(Expression, State), ParseError> {
     Ok((Expression::Touple(expressions), state))
 }
 
-fn parse_str(state: &State) -> Result<(Expression, State), ParseError> {
+fn take_str(state: &State) -> Result<(String, State, Loc), ParseError> {
     let (token, state) = state.take_first().map_err(|()| None)?;
     let mut value = String::new();
 
@@ -444,7 +442,13 @@ fn parse_str(state: &State) -> Result<(Expression, State), ParseError> {
 
     value.pop();
 
-    Ok((Expression::String(value), state))
+    Ok((value, state, token.loc.clone()))
+}
+
+fn parse_str(state: &State) -> Result<(Expression, State), ParseError> {
+    let (string, state, _) = take_str(state)?;
+
+    Ok((Expression::String(string), state))
 }
 
 fn take_ident_token(state: &State) -> ParseResult<Token> {
@@ -469,12 +473,22 @@ fn require_ident(state: &State) -> ParseResult<Token> {
     }
 }
 
-fn is_ident(token: &Token) -> bool {
-    if let Some(first_char) = token.value.chars().collect::<Vec<char>>().get(0) {
-        if *first_char == '\"' {
+fn is_numeric(string: &str) -> bool {
+    for c in string.chars() {
+        if !c.is_numeric() {
             return false;
         }
-        if first_char.is_numeric() {
+    }
+
+    return true;
+}
+
+fn is_ident(token: &Token) -> bool {
+    if is_numeric(&token.value) {
+        return false;
+    }
+    if let Some(first_char) = token.value.chars().collect::<Vec<char>>().get(0) {
+        if *first_char == '\"' {
             return false;
         }
     }
@@ -529,7 +543,29 @@ fn parse_access(state: &State) -> ER {
     ))
 }
 
-fn parse_next_expr_allow_newline(state: &State) -> Result<(Expression, State), ParseError> {
+fn parse_import_expr(state: &State) -> ER {
+    let (from_token, state) = pick("from", state)?;
+    let (source, state, loc) = take_str(&state)?;
+    let state = require("import", &state, "Invalid")?;
+    if let Some((symbols, state)) = allow_empty(take_comma_separated_ident_tokens(&state))? {
+        Ok((
+            Expression::ImportExpr(ImportExpr {
+                loc,
+                source,
+                symbols,
+            }),
+            state,
+        ))
+    } else {
+        Err(Some(
+            from_token
+                .loc
+                .error("Invalid import. Specify symbols to import."),
+        ))
+    }
+}
+
+fn parse_next_expr_allow_newline(state: &State) -> ER {
     let state = skip_all("\n", state.clone());
     parse_next_expr(&state)
 }
@@ -587,14 +623,14 @@ fn digit_to_int(ch: char) -> Option<i64> {
     }
 }
 
-fn parse_func_args(state: &State) -> ParseResult<Vec<String>> {
-    let mut state = take("(", state)?;
-    let mut args = Vec::<String>::new();
+fn take_comma_separated_ident_tokens(state: &State) -> ParseResult<Vec<Token>> {
+    let mut args = Vec::<Token>::new();
+    let mut state = state.clone();
 
     loop {
         state = match take_ident_token(&state) {
             Ok((ident, state)) => {
-                args.push(ident.value);
+                args.push(ident);
                 state
             }
             Err(err) => match err {
@@ -619,10 +655,18 @@ fn parse_func_args(state: &State) -> ParseResult<Vec<String>> {
         };
     }
 
-    let state = skip_all("\n", state);
-    let state = require(")", &state, "Missing closing parenthesis for function args")?;
+    let state = skip_all("\n", state.clone());
 
     return Ok((args, state));
+}
+
+fn parse_func_args(state: &State) -> ParseResult<Vec<String>> {
+    let state = take("(", state)?;
+    let (tokens, state) = take_comma_separated_ident_tokens(&state)?;
+    let values = tokens.iter().map(|t| t.value.clone()).collect();
+    let state = require(")", &state, "Missing closing parenthesis for function args")?;
+
+    Ok((values, state))
 }
 
 fn skip_all(expected: &str, initial_state: State) -> State {
@@ -1356,17 +1400,15 @@ mod tests {
 
         assert_eq!(
             ast,
-            Program {
-                expressions: vec![Expression::List(List {
-                    loc: Loc { line: 1, column: 1 },
-                    items: vec![
-                        Expression::Int(5),
-                        Expression::Int(7),
-                        Expression::Int(13),
-                        Expression::Int(29),
-                    ],
-                }),],
-            }
+            Program::new(vec![Expression::List(List {
+                loc: Loc { line: 1, column: 1 },
+                items: vec![
+                    Expression::Int(5),
+                    Expression::Int(7),
+                    Expression::Int(13),
+                    Expression::Int(29),
+                ],
+            })])
         );
     }
 
@@ -1378,12 +1420,10 @@ mod tests {
 
         assert_eq!(
             ast,
-            Program {
-                expressions: vec![Expression::FuncExpr(FuncExpr {
-                    args: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                    expressions: vec![],
-                })],
-            },
+            Program::new(vec![Expression::FuncExpr(FuncExpr {
+                args: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                expressions: vec![],
+            })])
         );
     }
 
@@ -1397,16 +1437,14 @@ mod tests {
 
         assert_eq!(
             program,
-            Program {
-                expressions: vec![Expression::VarDecl(Box::new(VarDecl {
-                    ident: "x".to_string(),
-                    loc: Loc::new(2, 13),
-                    expr: Expression::FuncExpr(FuncExpr {
-                        args: vec![],
-                        expressions: vec![Expression::Return(Box::new(Expression::Int(1))),],
-                    })
-                }))],
-            }
+            Program::new(vec![Expression::VarDecl(Box::new(VarDecl {
+                ident: "x".to_string(),
+                loc: Loc::new(2, 13),
+                expr: Expression::FuncExpr(FuncExpr {
+                    args: vec![],
+                    expressions: vec![Expression::Return(Box::new(Expression::Int(1))),],
+                })
+            }))]),
         );
     }
 
@@ -1419,22 +1457,20 @@ mod tests {
 
         assert_eq!(
             program,
-            Program {
-                expressions: vec![Expression::FuncCall(FuncCall {
-                    ident: Identifier {
-                        accessors: vec![tokens[0].clone()]
-                    },
-                    arg: Box::new(Expression::Touple(vec![
-                        Expression::Int(1),
-                        Expression::FuncCall(FuncCall {
-                            ident: Identifier {
-                                accessors: vec![tokens[4].clone()]
-                            },
-                            arg: Box::new(Expression::Touple(vec![]))
-                        })
-                    ]))
-                })]
-            }
+            Program::new(vec![Expression::FuncCall(FuncCall {
+                ident: Identifier {
+                    accessors: vec![tokens[0].clone()]
+                },
+                arg: Box::new(Expression::Touple(vec![
+                    Expression::Int(1),
+                    Expression::FuncCall(FuncCall {
+                        ident: Identifier {
+                            accessors: vec![tokens[4].clone()]
+                        },
+                        arg: Box::new(Expression::Touple(vec![]))
+                    })
+                ]))
+            })])
         );
     }
 
@@ -1450,16 +1486,14 @@ mod tests {
 
             assert_eq!(
                 ast,
-                Program {
-                    expressions: vec![Expression::Access(Access {
-                        loc: Loc::new(1, 4),
-                        target: Box::new(Expression::Variable(Variable {
-                            loc: Loc::new(1, 1),
-                            ident: "foo".to_string(),
-                        })),
-                        key: "bar".to_string(),
-                    }),],
-                },
+                Program::new(vec![Expression::Access(Access {
+                    loc: Loc::new(1, 4),
+                    target: Box::new(Expression::Variable(Variable {
+                        loc: Loc::new(1, 1),
+                        ident: "foo".to_string(),
+                    })),
+                    key: "bar".to_string(),
+                }),],),
             );
         }
 
@@ -1472,14 +1506,12 @@ mod tests {
 
             assert_eq!(
                 ast,
-                Program {
-                    expressions: vec![Expression::ReAssignment(Box::new(ReAssignment {
-                        ident: Identifier {
-                            accessors: vec![tokens[0].clone(), tokens[2].clone()]
-                        },
-                        expr: Expression::Int(123),
-                    }))],
-                },
+                Program::new(vec![Expression::ReAssignment(Box::new(ReAssignment {
+                    ident: Identifier {
+                        accessors: vec![tokens[0].clone(), tokens[2].clone()]
+                    },
+                    expr: Expression::Int(123),
+                }))],),
             );
         }
 
@@ -1492,23 +1524,45 @@ mod tests {
 
             assert_eq!(
                 ast,
-                Program {
-                    expressions: vec![Expression::FuncCall(FuncCall {
-                        ident: Identifier {
-                            accessors: vec![
-                                Token {
-                                    value: "foo".to_string(),
-                                    loc: Loc::new(1, 1),
-                                },
-                                Token {
-                                    value: "bar".to_string(),
-                                    loc: Loc::new(1, 5),
-                                },
-                            ]
-                        },
-                        arg: Box::new(Expression::Touple(vec![])),
-                    })]
-                },
+                Program::new(vec![Expression::FuncCall(FuncCall {
+                    ident: Identifier {
+                        accessors: vec![
+                            Token {
+                                value: "foo".to_string(),
+                                loc: Loc::new(1, 1),
+                            },
+                            Token {
+                                value: "bar".to_string(),
+                                loc: Loc::new(1, 5),
+                            },
+                        ]
+                    },
+                    arg: Box::new(Expression::Touple(vec![])),
+                })]),
+            );
+        }
+    }
+
+    mod modules {
+        use super::*;
+        use pretty_assertions_sorted::assert_eq;
+
+        #[test]
+        fn it_can_parse_imports() {
+            let source = r#"from "./foo.fun" import bar"#;
+            let tokens = lex(source);
+            let program = parse(&tokens).unwrap();
+
+            assert_eq!(
+                program,
+                Program::new(vec![Expression::ImportExpr(ImportExpr {
+                    loc: Loc::new(1, 6),
+                    source: "./foo.fun".to_string(),
+                    symbols: vec![Token {
+                        value: "bar".to_string(),
+                        loc: Loc::new(1, r#"from "./foo.fun" import "#.len() + 1),
+                    }],
+                })])
             );
         }
     }

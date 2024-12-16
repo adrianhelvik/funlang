@@ -7,10 +7,15 @@ let Animal = () {
         println animal.name
     }
 
+    animal.set_name = (name) {
+        animal.name = name
+    }
+
     ret animal
 }
 
 let animal = Animal()
-let say_name = animal.say_name
-say_name()
+animal.say_name()
+
+animal.set_name("Fluffy")
 animal.say_name()

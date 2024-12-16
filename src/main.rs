@@ -13,7 +13,7 @@ use std::rc::Rc;
 //use std::time::Instant;
 use types::*;
 
-pub fn eval(source: &str) -> Result<(), SyntaxError> {
+pub fn eval(source: &str, filename: &str) -> Result<(), SyntaxError> {
     //let start = Instant::now();
     let tokens = lex(source);
     //println!("lexed in {} seconds", start.elapsed().as_secs_f32());
@@ -21,6 +21,10 @@ pub fn eval(source: &str) -> Result<(), SyntaxError> {
     //let start = Instant::now();
     match parse(&tokens) {
         Ok(program) => {
+            let program = Program {
+                filename: Some(filename.to_string()),
+                expressions: program.expressions.into(),
+            };
             //println!("parsed in {} seconds", start.elapsed().as_secs_f32());
             let output = Rc::new(RefCell::new(std::io::stdout()));
             //let start = Instant::now();
@@ -54,8 +58,8 @@ pub fn test_eval(source: &str) -> String {
     }
 }
 
-pub fn eval_or_panic(source: &str) {
-    if let Err(err) = eval(source) {
+pub fn eval_or_panic(source: &str, filename: &str) {
+    if let Err(err) = eval(source, filename) {
         eprintln!("{}", err.message);
         std::process::exit(1);
     }
@@ -68,14 +72,15 @@ pub fn main() {
     }
     let filename = args[1].clone();
 
-    let contents = fs::read_to_string(filename).expect("Failed to read file");
+    let contents = fs::read_to_string(&filename).expect("Failed to read file");
 
-    eval_or_panic(&contents);
+    eval_or_panic(&contents, &filename);
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
     use types::Program;
 
     #[allow(dead_code)]
@@ -479,6 +484,7 @@ pub mod tests {
 
     mod eq {
         use super::*;
+        use pretty_assertions::assert_eq;
 
         #[test]
         pub fn eq_equal_variables() {
@@ -564,6 +570,7 @@ pub mod tests {
 
     mod modulo {
         use super::*;
+        use pretty_assertions::assert_eq;
 
         #[test]
         pub fn numbers() {
@@ -860,5 +867,22 @@ pub mod tests {
         "#;
 
         assert_eq!(test_eval(source), "i = 1000\nDone!");
+    }
+
+    #[test]
+    fn it_can_import_symbols() {
+        let source = r#"
+            from "./lib/list.fun" import list
+
+            let my_list = list()
+            my_list.insert(123)
+            my_list.insert(42)
+            my_list.insert(69)
+            my_list.insert(1337)
+
+            print my_list.len()
+        "#;
+
+        assert_eq!(test_eval(source), "4");
     }
 }

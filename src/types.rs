@@ -2,6 +2,7 @@ use colorful::Color;
 use colorful::Colorful;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs;
 use std::io::Write;
 use std::rc::Rc;
 
@@ -9,6 +10,8 @@ use crate::builtins::*;
 use crate::interpreter::call_func_expr;
 use crate::interpreter::eval_expr_and_call_returned_block;
 use crate::interpreter::eval_expr_list;
+use crate::lexer::lex;
+use crate::parser::parse;
 
 fn expr_list_debug_str(delimiter: &str, expressions: &Vec<Expression>) -> String {
     join(
@@ -20,11 +23,12 @@ fn expr_list_debug_str(delimiter: &str, expressions: &Vec<Expression>) -> String
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub expressions: Vec<Expression>,
+    pub filename: Option<String>
 }
 
 impl Program {
     pub fn new(expressions: Vec<Expression>) -> Self {
-        Program { expressions }
+        Program { expressions, filename: None }
     }
 
     pub fn debug_str(&self) -> String {
@@ -85,6 +89,14 @@ pub enum Expression {
     WhileExpr(WhileExpr),
     List(List),
     Access(Access),
+    ImportExpr(ImportExpr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportExpr {
+    pub loc: Loc,
+    pub source: String,
+    pub symbols: Vec<Token>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +170,10 @@ impl Expression {
             Expression::FuncCall(_f) => "func_call".to_string(),
             Expression::List(list) => format!("[{}]", expr_list_debug_str(", ", &list.items)),
             Expression::Access(access) => format!("{}.{}", access.target.debug_str(), access.key),
+            Expression::ImportExpr(import_expr) => {
+                let imported = import_expr.symbols.iter().map(|t| t.value.clone()).collect();
+                return format!("from \"{}\" import {}", import_expr.source, join(", ", imported));
+            },
             Expression::ForExpr(for_expr) => {
                 let body_debug_str = join(
                     "\n",
@@ -274,6 +290,7 @@ impl Expression {
             Expression::WhileExpr(_) => "while",
             Expression::List(_) => "list",
             Expression::Access(_) => "access",
+            Expression::ImportExpr(_) => "import",
         }
     }
 
@@ -394,7 +411,7 @@ impl Expression {
 
                 if reassignment.ident.accessors.len() == 1 {
                     let token = reassignment.ident.accessors[0].clone();
-                    scope.set(token.loc, token.value, assigned_value.clone())?;
+                    scope.set(&token.loc, token.value, assigned_value.clone())?;
                     return Ok(assigned_value.clone());
                 }
 
@@ -499,6 +516,31 @@ impl Expression {
                 }
                 _ => Err(access.loc.error("Not able to call method on value")),
             },
+            Expression::ImportExpr(import_expr) => {
+                let bytes = fs::read(&import_expr.source)
+                    .map_err(|_| import_expr.loc.error(&format!("Failed to import '{}'", import_expr.source)))?;
+
+                let source = String::from_utf8(bytes)
+                    .map_err(|_| import_expr.loc.error(&format!("Failed to import '{}'", import_expr.source)))?;
+
+                let tokens = &lex(&source);
+
+                let ast = parse(tokens)?;
+
+                let remote_scope = Rc::new(Scope::new());
+
+                eval_expr_list(&ast.expressions, output, &remote_scope)?;
+
+                for ident in &import_expr.symbols {
+                    println!("Importing {}", ident.value);
+                    let value = remote_scope.get(&ident.value)
+                        .ok_or_else(|| import_expr.loc.error(&format!("Symbol '{}' was not exported from '{}'", &ident.value, import_expr.source)))?;
+
+                    scope.assign(ident.value.clone(), value);
+                }
+
+                Ok(Expression::Null)
+            },
             _ => {
                 todo!("Failed to eval expression {:?}", self);
             }
@@ -550,6 +592,7 @@ impl Expression {
             Expression::Map(_map) => todo!(),
             Expression::ForExpr(_) => todo!(),
             Expression::WhileExpr(_) => todo!(),
+            Expression::ImportExpr(_) => todo!(),
         }
     }
 
@@ -672,7 +715,7 @@ impl Scope {
         expr
     }
 
-    pub fn set(&self, loc: Loc, ident: String, expr: Expression) -> Result<Expression, LocError> {
+    pub fn set(&self, loc: &Loc, ident: String, expr: Expression) -> Result<Expression, LocError> {
         let val = {
             let values = self.values.borrow();
             values.get(&ident).cloned()
@@ -695,7 +738,7 @@ impl Scope {
                         ))
                     })?
                     .borrow();
-                parent.set(loc, ident, expr)
+                parent.set(&loc, ident, expr)
             }
         }
     }
