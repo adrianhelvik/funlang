@@ -6,6 +6,7 @@ pub mod types;
 
 use lexer::lex;
 use parser::parse;
+use resolve_path::PathResolveExt;
 use std::cell::RefCell;
 use std::env;
 use std::fs;
@@ -22,13 +23,12 @@ pub fn eval(source: &str, filename: &str) -> Result<(), SyntaxError> {
     match parse(&tokens) {
         Ok(program) => {
             let program = Program {
-                filename: Some(filename.to_string()),
                 expressions: program.expressions.into(),
             };
             //println!("parsed in {} seconds", start.elapsed().as_secs_f32());
             let output = Rc::new(RefCell::new(std::io::stdout()));
             //let start = Instant::now();
-            match interpreter::eval_program(&program, &output) {
+            match interpreter::eval_program(&program, &output, filename) {
                 Ok(_) => {
                     //println!("evaluated in {} seconds", start.elapsed().as_secs_f32());
                     Ok(())
@@ -43,9 +43,13 @@ pub fn eval(source: &str, filename: &str) -> Result<(), SyntaxError> {
 pub fn test_eval(source: &str) -> String {
     let output = Rc::new(RefCell::new(Vec::new()));
     let tokens = lex(source);
+    let curdir = env::current_dir().unwrap();
+    let cwd = curdir.to_str().unwrap();
+    let root_cow = "./test.fun".resolve_in(cwd);
+    let root = root_cow.to_str().unwrap();
     match parse(&tokens) {
         Ok(program) => {
-            match interpreter::eval_program(&program, &output) {
+            match interpreter::eval_program(&program, &output, root) {
                 Ok(_) => {}
                 Err(err) => {
                     return SyntaxError::generate_plain(err, source.to_string()).message;
@@ -70,7 +74,11 @@ pub fn main() {
     if args.len() < 2 {
         panic!("You must supply a file type. Args: {:?}", args);
     }
-    let filename = args[1].clone();
+    let curdir = env::current_dir().unwrap();
+    let cwd = curdir.to_str().unwrap();
+    let tmp0 = args[1].clone();
+    let tmp = tmp0.resolve_in(cwd);
+    let filename = tmp.to_str().unwrap();
 
     let contents = fs::read_to_string(&filename).expect("Failed to read file");
 
@@ -867,6 +875,15 @@ pub mod tests {
         "#;
 
         assert_eq!(test_eval(source), "i = 1000\nDone!");
+    }
+
+    #[test]
+    fn it_can_import_and_not_do_anything() {
+        let source = r#"
+            from "./lib/list.fun" import list
+        "#;
+
+        assert_eq!(test_eval(source), "");
     }
 
     #[test]

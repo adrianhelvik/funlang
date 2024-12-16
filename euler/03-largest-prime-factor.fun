@@ -29,7 +29,6 @@ let sieve = (n) {
 }
 
 let factors = (n) {
-    for i in 0
 }
 
 eq(factors 13195, [5, 7, 13, 29])

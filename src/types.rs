@@ -1,9 +1,11 @@
 use colorful::Color;
 use colorful::Colorful;
+use resolve_path::PathResolveExt;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::builtins::*;
@@ -23,12 +25,11 @@ fn expr_list_debug_str(delimiter: &str, expressions: &Vec<Expression>) -> String
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub expressions: Vec<Expression>,
-    pub filename: Option<String>
 }
 
 impl Program {
     pub fn new(expressions: Vec<Expression>) -> Self {
-        Program { expressions, filename: None }
+        Program { expressions }
     }
 
     pub fn debug_str(&self) -> String {
@@ -171,9 +172,17 @@ impl Expression {
             Expression::List(list) => format!("[{}]", expr_list_debug_str(", ", &list.items)),
             Expression::Access(access) => format!("{}.{}", access.target.debug_str(), access.key),
             Expression::ImportExpr(import_expr) => {
-                let imported = import_expr.symbols.iter().map(|t| t.value.clone()).collect();
-                return format!("from \"{}\" import {}", import_expr.source, join(", ", imported));
-            },
+                let imported = import_expr
+                    .symbols
+                    .iter()
+                    .map(|t| t.value.clone())
+                    .collect();
+                return format!(
+                    "from \"{}\" import {}",
+                    import_expr.source,
+                    join(", ", imported)
+                );
+            }
             Expression::ForExpr(for_expr) => {
                 let body_debug_str = join(
                     "\n",
@@ -254,7 +263,11 @@ impl Expression {
             }
             Expression::Bool(value) => value.to_string(),
             Expression::Block(func_call) => {
-                format!("{} {}", func_call.ident.debug_str(), func_call.arg.debug_str())
+                format!(
+                    "{} {}",
+                    func_call.ident.debug_str(),
+                    func_call.arg.debug_str()
+                )
             }
             Expression::Map(map) => {
                 let map_str = map
@@ -350,9 +363,7 @@ impl Expression {
 
     pub fn get_by_key(&self, key: &str) -> Option<Expression> {
         match self {
-            Expression::Map(map) => {
-                map.borrow().get(key).cloned()
-            },
+            Expression::Map(map) => map.borrow().get(key).cloned(),
             _ => None,
         }
     }
@@ -362,7 +373,7 @@ impl Expression {
             Expression::Map(map) => {
                 map.borrow_mut().insert(key.to_string(), val);
                 true
-            },
+            }
             _ => false,
         }
     }
@@ -399,7 +410,7 @@ impl Expression {
 
                 let expr = call_func_expr(func_call, output, scope);
                 Ok(expr?.strip_return())
-            },
+            }
             Expression::Block(func_call) => call_func_expr(func_call, output, scope),
             Expression::VarDecl(assignment) => {
                 let value = assignment.expr.eval(output, scope)?;
@@ -415,17 +426,27 @@ impl Expression {
                     return Ok(assigned_value.clone());
                 }
 
-                let mut container = scope.get(&reassignment.ident.accessors[0].value)
-                    .ok_or_else(|| reassignment.ident.accessors[0].loc.error("Undefined access"))?;
+                let mut container = scope
+                    .get(&reassignment.ident.accessors[0].value)
+                    .ok_or_else(|| {
+                        reassignment.ident.accessors[0]
+                            .loc
+                            .error("Undefined access")
+                    })?;
 
                 for i in 1..(reassignment.ident.accessors.len() - 1) {
                     let token = &reassignment.ident.accessors[i];
-                    container = container.get_by_key(&token.value)
-                        .ok_or_else(|| token.loc.error(&format!("Failed to read property '{}'", &token.value)))?;
+                    container = container.get_by_key(&token.value).ok_or_else(|| {
+                        token
+                            .loc
+                            .error(&format!("Failed to read property '{}'", &token.value))
+                    })?;
                 }
                 let token = reassignment.ident.accessors.last().unwrap();
                 if !container.set(&token.value, assigned_value.clone()) {
-                    return Err(reassignment.ident.accessors[0].loc.error(&format!("Failed to set property '{}'", &token.value)));
+                    return Err(reassignment.ident.accessors[0]
+                        .loc
+                        .error(&format!("Failed to set property '{}'", &token.value)));
                 }
                 Ok(assigned_value)
             }
@@ -517,11 +538,34 @@ impl Expression {
                 _ => Err(access.loc.error("Not able to call method on value")),
             },
             Expression::ImportExpr(import_expr) => {
-                let bytes = fs::read(&import_expr.source)
-                    .map_err(|_| import_expr.loc.error(&format!("Failed to import '{}'", import_expr.source)))?;
+                let current_filename = scope
+                    .get("__filename")
+                    .ok_or_else(|| {
+                        import_expr
+                            .loc
+                            .error("__filename is unavailable or invalid. Cannot import")
+                    })?
+                    .as_string(&import_expr.loc, output, scope)?;
 
-                let source = String::from_utf8(bytes)
-                    .map_err(|_| import_expr.loc.error(&format!("Failed to import '{}'", import_expr.source)))?;
+                let current_dir = Path::new(&current_filename).parent().ok_or_else(|| {
+                    import_expr
+                        .loc
+                        .error(&format!("Failed to import '{}'", import_expr.source))
+                })?;
+
+                let resolved = import_expr.source.resolve_in(current_dir);
+
+                let bytes = fs::read(&resolved).map_err(|_| {
+                    import_expr
+                        .loc
+                        .error(&format!("Failed to import '{}'", import_expr.source))
+                })?;
+
+                let source = String::from_utf8(bytes).map_err(|_| {
+                    import_expr
+                        .loc
+                        .error(&format!("Failed to import '{}'", import_expr.source))
+                })?;
 
                 let tokens = &lex(&source);
 
@@ -532,15 +576,18 @@ impl Expression {
                 eval_expr_list(&ast.expressions, output, &remote_scope)?;
 
                 for ident in &import_expr.symbols {
-                    println!("Importing {}", ident.value);
-                    let value = remote_scope.get(&ident.value)
-                        .ok_or_else(|| import_expr.loc.error(&format!("Symbol '{}' was not exported from '{}'", &ident.value, import_expr.source)))?;
+                    let value = remote_scope.get(&ident.value).ok_or_else(|| {
+                        import_expr.loc.error(&format!(
+                            "Symbol '{}' was not exported from '{}'",
+                            &ident.value, import_expr.source
+                        ))
+                    })?;
 
                     scope.assign(ident.value.clone(), value);
                 }
 
                 Ok(Expression::Null)
-            },
+            }
             _ => {
                 todo!("Failed to eval expression {:?}", self);
             }
@@ -669,7 +716,10 @@ pub struct Identifier {
 
 impl Identifier {
     pub fn debug_str(&self) -> String {
-        join(".", self.accessors.iter().map(|t| t.value.clone()).collect())
+        join(
+            ".",
+            self.accessors.iter().map(|t| t.value.clone()).collect(),
+        )
     }
 
     pub fn error(&self, message: &str) -> LocError {

@@ -11,4 +11,6 @@ pretty_assertions_sorted = "1.2.3"
 [dependencies]
 anyhow = "1.0.75"
 colorful = "0.2.2"
+pathdiff = "0.2.3"
 pretty_assertions = "1.4.1"
+resolve-path = "0.1.0"

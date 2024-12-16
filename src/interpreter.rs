@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 
-pub fn eval_program<W: Write>(program: &Program, output: &Rc<RefCell<W>>) -> Result<(), LocError> {
+pub fn eval_program<W: Write>(program: &Program, output: &Rc<RefCell<W>>, filename: &str) -> Result<(), LocError> {
     let scope = Rc::new(Scope::new());
+
+    scope.assign("__filename".to_string(), Expression::String(filename.to_string()));
 
     eval_expr_list(&program.expressions, output, &scope)?;
 
@@ -61,7 +63,7 @@ pub fn eval_expr_and_call_returned_block<W: Write>(
 
 pub fn lookup(scope: &Rc<Scope>, ident: &Identifier) -> Result<(Expression, Loc), LocError> {
     let mut value = scope.get(&ident.accessors[0].value)
-        .ok_or_else(|| ident.accessors[0].loc.error("Failed to look up"))?;
+        .ok_or_else(|| ident.accessors[0].loc.error("Failed to look up variable"))?;
 
     for i in 1..ident.accessors.len() {
         let token = &ident.accessors[i];
@@ -171,7 +173,7 @@ mod tests {
     fn eval_ast(ast: &Program) -> String {
         let output = Rc::new(RefCell::new(Vec::new()));
 
-        if let Err(err) = eval_program(ast, &output) {
+        if let Err(err) = eval_program(ast, &output, "./test.fun") {
             panic!("Failed to eval ast {:#?}", err);
         }
 
