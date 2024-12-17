@@ -5,6 +5,7 @@ pub mod scope;
 pub mod lexer;
 pub mod parser;
 pub mod types;
+mod util;
 
 use lexer::lex;
 use parser::parse;
@@ -875,15 +876,28 @@ pub mod tests {
             assert_eq!(test_eval(source), "[1, 2, 3]");
         }
 
-        //#[test]
+        #[test]
         fn it_can_push_to_a_list() {
             let source = r#"
                 let my_list = [1, 2, add(1, 2)]
                 my_list.push(4)
+                my_list.push(5)
                 print my_list
             "#;
 
-            assert_eq!(test_eval(source), "[1, 2, 3, 4]");
+            assert_eq!(test_eval(source), "[1, 2, 3, 4, 5]");
+        }
+
+        #[test]
+        fn it_can_get_the_length_of_a_list() {
+            let source = r#"
+                let my_list = [1, 2, add(1, 2)]
+                my_list.push(4)
+                my_list.push(5)
+                print my_list.len()
+            "#;
+
+            assert_eq!(test_eval(source), "5");
         }
     }
 
@@ -1181,6 +1195,20 @@ pub mod tests {
                 println "\t"
             "#,
             vec!["\t"]
+        );
+    }
+
+    #[test]
+    fn you_can_check_if_something_has_a_key_using_in() {
+        assert_lines_equal!(
+            r#"
+                let my_map = Map()
+                my_map.hello = "world"
+
+                println in(my_map, "hello")
+                println in(my_map, "there")
+            "#,
+            vec!["true", "false"]
         );
     }
 }

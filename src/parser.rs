@@ -1,3 +1,5 @@
+use std::{cell::RefCell, rc::Rc};
+
 use crate::types::*;
 
 type ParseError = Option<LocError>;
@@ -588,6 +590,7 @@ fn parse_func_call(state: &State) -> Result<(Expression, State), ParseError> {
         Expression::FuncCall(FuncCall {
             ident,
             arg: Box::new(arg),
+            this: Box::new(Expression::Null),
         }),
         state,
     ))
@@ -671,7 +674,7 @@ fn parse_list(state: &State) -> Result<(Expression, State), ParseError> {
     let state = require("]", &state, "Unterminated list")?;
 
     let expr = Expression::List(List {
-        items,
+        items: Rc::new(RefCell::new(items)),
         loc: opening_bracket.loc.clone(),
     });
 
@@ -836,6 +839,8 @@ fn parse_func_expr(state: &State) -> ER {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use super::*;
     use crate::lexer::lex;
     use pretty_assertions_sorted::assert_eq;
@@ -896,6 +901,7 @@ mod tests {
                     accessors: vec![foo_token]
                 },
                 arg: Box::new(Expression::Int(123)),
+                this: Box::new(Expression::Null),
             })
         );
 
@@ -914,6 +920,7 @@ mod tests {
                     accessors: vec![tokens[0].clone()]
                 },
                 arg: Box::new(Expression::String(String::from("Hello world"))),
+                this: Box::new(Expression::Null),
             })])
         );
     }
@@ -934,12 +941,14 @@ mod tests {
                         accessors: vec![tokens[0].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
+                    this: Box::new(Expression::Null),
                 }),
                 Expression::FuncCall(FuncCall {
                     ident: Identifier {
                         accessors: vec![tokens[3].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Foo bar"))),
+                    this: Box::new(Expression::Null),
                 }),
             ],)
         );
@@ -961,12 +970,14 @@ mod tests {
                         accessors: vec![tokens[0].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
+                    this: Box::new(Expression::Null),
                 }),
                 Expression::FuncCall(FuncCall {
                     ident: Identifier {
                         accessors: vec![tokens[2].clone()]
                     },
                     arg: Box::new(Expression::String(String::from("Foo bar"))),
+                    this: Box::new(Expression::Null),
                 }),
             ],)
         );
@@ -987,6 +998,7 @@ mod tests {
                     Expression::String(String::from("Hello")),
                     Expression::String(String::from("world")),
                 ])),
+                this: Box::new(Expression::Null),
             })
         );
     }
@@ -1040,6 +1052,7 @@ mod tests {
                     "x",
                     Loc::new(1, 7),
                 )))),
+                this: Box::new(Expression::Null),
             })
         )
     }
@@ -1116,6 +1129,7 @@ mod tests {
                         "x",
                         Loc::new(4, 19)
                     )))),
+                    this: Box::new(Expression::Null),
                 })
             ],)
         )
@@ -1162,6 +1176,7 @@ mod tests {
                         }]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
+                    this: Box::new(Expression::Null),
                 })],
             })
         );
@@ -1189,6 +1204,7 @@ mod tests {
                         }]
                     },
                     arg: Box::new(Expression::String(String::from("Hello world"))),
+                    this: Box::new(Expression::Null),
                 })],
             }),])
         );
@@ -1217,6 +1233,7 @@ mod tests {
                         "a",
                         Loc::new(2, 19),
                     )))),
+                    this: Box::new(Expression::Null),
                 }),
                 Expression::FuncCall(FuncCall {
                     ident: Identifier {
@@ -1229,6 +1246,7 @@ mod tests {
                         "b",
                         Loc::new(3, 19),
                     )))),
+                    this: Box::new(Expression::Null),
                 }),
             ],)
         );
@@ -1317,6 +1335,7 @@ mod tests {
                             }]
                         },
                         arg: Box::new(Expression::String(String::from("Hello world"))),
+                        this: Box::new(Expression::Null),
                     })],
                 }),
                 else_expr: Option::None,
@@ -1451,6 +1470,7 @@ mod tests {
                         }),
                         Expression::Int(10),
                     ])),
+                    this: Box::new(Expression::Null),
                 })),
                 body: vec![Expression::Int(123),],
             })])
@@ -1505,12 +1525,12 @@ mod tests {
             ast,
             Program::new(vec![Expression::List(List {
                 loc: Loc { line: 1, column: 1 },
-                items: vec![
+                items: Rc::new(RefCell::new(vec![
                     Expression::Int(5),
                     Expression::Int(7),
                     Expression::Int(13),
                     Expression::Int(29),
-                ],
+                ])),
             })])
         );
     }
@@ -1570,9 +1590,11 @@ mod tests {
                         ident: Identifier {
                             accessors: vec![tokens[4].clone()]
                         },
-                        arg: Box::new(Expression::Touple(vec![]))
-                    })
-                ]))
+                        arg: Box::new(Expression::Touple(vec![])),
+                        this: Box::new(Expression::Null),
+                    }),
+                ])),
+                this: Box::new(Expression::Null),
             })])
         );
     }
@@ -1641,6 +1663,7 @@ mod tests {
                         ]
                     },
                     arg: Box::new(Expression::Touple(vec![])),
+                    this: Box::new(Expression::Null),
                 })]),
             );
         }

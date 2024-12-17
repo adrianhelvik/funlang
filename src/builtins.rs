@@ -1,9 +1,9 @@
 use std::{cell::RefCell, collections::HashMap, io::Write, rc::Rc};
 
-use crate::{context::FunContext, scope::Scope, Expression, FuncCall, LazyExpression, LocError};
+use crate::{context::FunCtx, scope::Scope, Expression, FuncCall, LazyExpression, LocError};
 
 pub fn fun_add<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let args = func_call.arg.as_vec();
@@ -18,7 +18,7 @@ pub fn fun_add<W: Write>(
 }
 
 pub fn fun_sub<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let args = func_call.arg.eager_eval(ctx)?.as_vec();
@@ -36,7 +36,7 @@ pub fn fun_sub<W: Write>(
 }
 
 pub fn fun_eq<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let values = func_call.arg.eval(ctx)?.as_vec();
@@ -53,7 +53,7 @@ pub fn fun_eq<W: Write>(
 }
 
 pub fn fun_str<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     Ok(Expression::String(
@@ -66,7 +66,7 @@ pub fn fun_str<W: Write>(
 }
 
 pub fn fun_not<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     Ok(Expression::Bool(
@@ -79,7 +79,7 @@ pub fn fun_not<W: Write>(
 }
 
 pub fn fun_lte<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let values = func_call.arg.eval(ctx)?.as_vec();
@@ -105,7 +105,7 @@ pub fn fun_lte<W: Write>(
 }
 
 pub fn fun_lt<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let values = func_call.arg.eval(ctx)?.as_vec();
@@ -131,7 +131,7 @@ pub fn fun_lt<W: Write>(
 }
 
 pub fn fun_gte<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let values = func_call.arg.eval(ctx)?.as_vec();
@@ -161,7 +161,7 @@ pub fn fun_create_map() -> Result<Expression, LocError> {
 }
 
 pub fn fun_lazy<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     Ok(Expression::Lazy(Box::new(LazyExpression {
@@ -171,27 +171,27 @@ pub fn fun_lazy<W: Write>(
 }
 
 pub fn fun_print<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let value = func_call.arg.eval(ctx)?;
     let result = value.as_string(&func_call.ident.loc(), ctx)?;
-    write!(ctx.output.borrow_mut(), "{}", &result).unwrap();
+    ctx.write(&result);
     Ok(Expression::Null)
 }
 
 pub fn fun_println<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let value = func_call.arg.eval(ctx)?;
     let result = value.as_string(&func_call.ident.loc(), ctx)?;
-    writeln!(ctx.output.borrow_mut(), "{}", &result).unwrap();
+    ctx.writeln(&result);
     Ok(Expression::Null)
 }
 
 pub fn fun_or<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let expressions = func_call.arg.eval(ctx)?.as_vec();
@@ -212,7 +212,7 @@ pub fn fun_or<W: Write>(
 }
 
 pub fn fun_and<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     println!("FUN OR: {}", func_call.arg.debug_str());
@@ -237,7 +237,7 @@ pub fn fun_and<W: Write>(
 }
 
 pub fn fun_modulo<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let arg = func_call.arg.clone();
@@ -259,7 +259,7 @@ pub fn fun_modulo<W: Write>(
 }
 
 pub fn fun_type<W: Write>(
-    ctx: &FunContext<W>,
+    ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let expr = func_call.arg.eval(ctx)?;
@@ -283,7 +283,7 @@ pub fn fun_core_env() -> Expression {
     Expression::Map(Rc::new(RefCell::new(env_map)))
 }
 
-pub fn fun_in<W: Write>(ctx: &FunContext<W>, func_call: &FuncCall) -> Result<Expression, LocError> {
+pub fn fun_in<W: Write>(ctx: &FunCtx<W>, func_call: &FuncCall) -> Result<Expression, LocError> {
     let args = func_call.arg.as_vec();
 
     match args.len() {
@@ -293,6 +293,37 @@ pub fn fun_in<W: Write>(ctx: &FunContext<W>, func_call: &FuncCall) -> Result<Exp
         _ => {
             Err(func_call.ident.loc().error("'in' requires two arguments"))
         },
+    }
+}
+
+pub fn fun_list_len<W: Write>(_ctx: &FunCtx<W>, func_call: &FuncCall) -> Result<Expression, LocError> {
+    if let Expression::List(list) = &*func_call.this {
+        Ok(Expression::Int(list.items.borrow().len().try_into().unwrap()))
+    } else {
+        Err(func_call.ident.loc().error(&format!("Attempted to call list.push on '{}'", func_call.this.type_str())))
+    }
+}
+
+pub fn fun_list_push<W: Write>(ctx: &FunCtx<W>, func_call: &FuncCall) -> Result<Expression, LocError> {
+    let args = func_call.arg.as_vec();
+
+    if args.len() == 0 {
+        return Err(func_call.ident.loc().error("You must specify the item to push"));
+    }
+
+    if args.len() > 1 {
+        return Err(func_call.ident.loc().error("This method only accepts one argument"));
+    }
+
+    if let Expression::List(list) = &*func_call.this {
+        let value = args[0].eval(ctx)?;
+        {
+            let mut values = list.items.borrow_mut();
+            values.push(value);
+        }
+        Ok(Expression::List(list.clone()))
+    } else {
+        Err(func_call.ident.loc().error(&format!("Attempted to call list.push on '{}'", func_call.this.type_str())))
     }
 }
 
