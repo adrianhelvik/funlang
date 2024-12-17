@@ -4,10 +4,17 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 
-pub fn eval_program<W: Write>(program: &Program, output: &Rc<RefCell<W>>, filename: &str) -> Result<(), LocError> {
+pub fn eval_program<W: Write>(
+    program: &Program,
+    output: &Rc<RefCell<W>>,
+    filename: &str,
+) -> Result<(), LocError> {
     let scope = Rc::new(Scope::new());
 
-    scope.assign("__filename".to_string(), Expression::String(filename.to_string()));
+    scope.assign(
+        "__filename".to_string(),
+        Expression::String(filename.to_string()),
+    );
 
     eval_expr_list(&program.expressions, output, &scope)?;
 
@@ -49,25 +56,30 @@ pub fn eval_expr_and_call_returned_block<W: Write>(
             let child_scope = Rc::new(child_scope);
             // TODO: Consider if I want this
             let value = Expression::Block(FuncCall {
-                ident: Identifier { accessors: vec![Token { value: "__block__".to_string(), loc: Loc::new(0, 0) }] },
+                ident: Identifier {
+                    accessors: vec![Token {
+                        value: "__block__".to_string(),
+                        loc: Loc::new(0, 0),
+                    }],
+                },
                 arg: Box::new(Expression::Null),
             })
             .eval(output, &child_scope)?;
             Ok(value)
         }
-        val => {
-            panic!("Failed to call {:#?}", val);
-        }
+        other => Ok(other),
     }
 }
 
 pub fn lookup(scope: &Rc<Scope>, ident: &Identifier) -> Result<(Expression, Loc), LocError> {
-    let mut value = scope.get(&ident.accessors[0].value)
+    let mut value = scope
+        .get(&ident.accessors[0].value)
         .ok_or_else(|| ident.accessors[0].loc.error("Failed to look up variable"))?;
 
     for i in 1..ident.accessors.len() {
         let token = &ident.accessors[i];
-        value = value.get_by_key(&token.value)
+        value = value
+            .get_by_key(&token.value)
             .ok_or_else(|| token.loc.error("Failed to look up"))?
     }
 
@@ -89,9 +101,7 @@ pub fn call_func_expr<W: Write>(
             &closure.scope,
             scope,
         ),
-        Expression::FuncExpr(func_expr) => {
-            call_func(&func_expr, &func_call, output, scope, scope)
-        }
+        Expression::FuncExpr(func_expr) => call_func(&func_expr, &func_call, output, scope, scope),
         Expression::Map(map) => call_map(&loc, &map, func_call, output, scope),
         expression => Err(loc.error(&format!(
             "expression of type '{}' is not callable. (value = {})",
@@ -112,10 +122,7 @@ fn call_map<W: Write>(
 
     match args.len() {
         1 => {
-            let key =
-                args[0]
-                    .eval(output, scope)?
-                    .as_string(loc, output, scope)?;
+            let key = args[0].eval(output, scope)?.as_string(loc, output, scope)?;
             let val = match map.borrow().get(&key) {
                 Some(expr) => expr.clone(),
                 None => Expression::Null,
@@ -123,10 +130,7 @@ fn call_map<W: Write>(
             Ok(val)
         }
         2 => {
-            let key =
-                args[0]
-                    .eval(output, scope)?
-                    .as_string(loc, output, scope)?;
+            let key = args[0].eval(output, scope)?.as_string(loc, output, scope)?;
             let val = args[1].eval(output, scope)?;
             map.borrow_mut().insert(key, val.clone());
             Ok(val)

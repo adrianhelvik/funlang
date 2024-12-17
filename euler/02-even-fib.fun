@@ -1,4 +1,4 @@
-println()
+println""
 println"--------------------------------"
 println"Euler 02: Even Fibonacci numbers"
 println"--------------------------------"
@@ -8,7 +8,7 @@ let sum = 0
 
 let cached = (func) {
     let cache = Map()
-    return (arg) {
+    ret (arg) {
         let value = cache(str(arg))
         if not eq(value, null) {
             ret cache(str(arg))
@@ -29,21 +29,15 @@ let fib = cached (n) {
 
 let sum = 0
 let i = 0
-let next = () {
-    let value = fib i
+let value = fib i
+while lt(value, 4000000) {
     i = add(i, 1)
-
-    if gte(value, 4000000) {
-        ret
-    }
+    value = fib i
 
     if eq(modulo(value, 2), 0) {
         sum = add(sum, value)
     }
-
-    next()
 }
-next()
 
 println("Sum:      ", sum)
 println("Expected: ", 4613732)

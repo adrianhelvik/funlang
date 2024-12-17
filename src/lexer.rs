@@ -15,7 +15,7 @@ pub fn lex(source: &str) -> Vec<Token> {
         }
         {
             tokens.borrow_mut().push(Token::new(
-                word.borrow().clone(),
+                unescape::unescape(&word.borrow().clone()).expect("Malformed string"),
                 Loc::new(line.borrow().clone(), column.borrow().clone()),
             ));
         }
@@ -33,6 +33,7 @@ pub fn lex(source: &str) -> Vec<Token> {
     };
 
     let mut in_dot = false;
+    let mut escaped = false;
 
     for (_i, c) in source.chars().enumerate() {
         if in_dot {
@@ -46,7 +47,7 @@ pub fn lex(source: &str) -> Vec<Token> {
             in_dot = false;
         }
 
-        if c == '"' {
+        if c == '"' && !escaped {
             if string {
                 add_to_word(c);
                 insert();
@@ -56,7 +57,20 @@ pub fn lex(source: &str) -> Vec<Token> {
             }
             string = !string;
         } else if string {
-            add_to_word(c);
+            if escaped {
+                // We only handle escaped " here,
+                // so add back the backslash for
+                // all other characters.
+                if c != '\"' {
+                    add_to_word('\\')
+                }
+                add_to_word(c);
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else {
+                add_to_word(c);
+            }
         } else {
             match c {
                 '.' => {

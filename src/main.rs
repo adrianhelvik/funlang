@@ -10,6 +10,8 @@ use resolve_path::PathResolveExt;
 use std::cell::RefCell;
 use std::env;
 use std::fs;
+use std::os::unix::process;
+use std::process::exit;
 use std::rc::Rc;
 //use std::time::Instant;
 use types::*;
@@ -17,7 +19,6 @@ use types::*;
 pub fn eval(source: &str, filename: &str) -> Result<(), SyntaxError> {
     //let start = Instant::now();
     let tokens = lex(source);
-    //println!("lexed in {} seconds", start.elapsed().as_secs_f32());
 
     //let start = Instant::now();
     match parse(&tokens) {
@@ -72,17 +73,34 @@ pub fn eval_or_panic(source: &str, filename: &str) {
 pub fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        panic!("You must supply a file type. Args: {:?}", args);
+        help();
     }
-    let curdir = env::current_dir().unwrap();
-    let cwd = curdir.to_str().unwrap();
-    let tmp0 = args[1].clone();
-    let tmp = tmp0.resolve_in(cwd);
-    let filename = tmp.to_str().unwrap();
+    match args.len() {
+        2 => {
+            let curdir = env::current_dir().unwrap();
+            let cwd = curdir.to_str().unwrap();
+            let tmp0 = args[1].clone();
+            let tmp = tmp0.resolve_in(cwd);
+            let filename = tmp.to_str().unwrap();
 
-    let contents = fs::read_to_string(&filename).expect("Failed to read file");
+            let contents = fs::read_to_string(&filename).expect("Failed to read file");
 
-    eval_or_panic(&contents, &filename);
+            eval_or_panic(&contents, &filename);
+        }
+        3 => {
+            if args[1] == "-e" {
+                eval_or_panic(&args[2], "eval");
+            } else {
+                help();
+            }
+        }
+        _ => help(),
+    }
+}
+
+fn help() {
+    eprintln!("You must supply a file name or use the -e flag to evaluate code");
+    exit(1);
 }
 
 #[cfg(test)]
@@ -90,6 +108,17 @@ pub mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use types::Program;
+
+    macro_rules! assert_lines_equal {
+        ($source:expr, $expected:expr) => {{
+            let output = test_eval($source);
+            let mut result = output.split("\n").collect::<Vec<_>>();
+            while result.last() == Some(&"") {
+                result.pop();
+            }
+            assert_eq!(result, $expected);
+        }};
+    }
 
     #[allow(dead_code)]
     pub fn lax(source: &str) -> Program {
@@ -674,8 +703,6 @@ pub mod tests {
             print and(a, b)
         "#;
 
-        println!("{:#?}", parse(&lex(source)));
-
         assert_eq!(test_eval(source), "true");
     }
 
@@ -901,5 +928,247 @@ pub mod tests {
         "#;
 
         assert_eq!(test_eval(source), "4");
+    }
+
+    #[test]
+    fn it_can_apply_a_function_to_a_closure() {
+        let source = r#"
+            let cached = (func) {
+                let cache = Map()
+                ret (arg) {
+                    let value = cache(str(arg))
+                    if not eq(value, null) {
+                        ret cache(str(arg))
+                    }
+                    let value = func(arg)
+                    cache(str(arg), value)
+                    ret value
+                }
+            }
+
+            let fib = cached (n) {
+                if lte(n, 1) {
+                    ret 1
+                }
+
+                ret add(fib(sub(n, 1)), fib(sub(n, 2)))
+            }
+
+            print fib 4
+        "#;
+
+        assert_eq!(test_eval(source), "5");
+    }
+
+    #[test]
+    fn it_can_apply_a_function_to_a_closure2() {
+        let source = r#"
+            let passthrough = (func) {
+                ret (arg) {
+                    println("in passthrough cb: ", arg)
+                    ret func(arg)
+                }
+            }
+
+            let foo = passthrough (n) {
+                println("in foo: ", n)
+                ret n
+            }
+
+            print foo 10
+        "#;
+
+        assert_eq!(test_eval(source), "in passthrough cb: 10\nin foo: 10\n10");
+    }
+
+    #[test]
+    fn it_can_apply_a_function_to_a_closure3() {
+        assert_lines_equal!(
+            r#"
+                let cached = (func) {
+                    let cache = Map()
+                    ret (arg) {
+                        let value = cache(str(arg))
+                        if not eq(value, null) {
+                            ret cache(str(arg))
+                        }
+                        let value = func(arg)
+                        cache(str(arg), value)
+                        ret value
+                    }
+                }
+
+                let fib = cached (n) {
+                    println("fib(", n, ")")
+                    if lte(n, 1) {
+                        ret 1
+                    }
+
+                    ret add(fib(sub(n, 1)), fib(sub(n, 2)))
+                }
+
+                fib 10
+            "#,
+            vec![
+                "fib(10)", "fib(9)", "fib(8)", "fib(7)", "fib(6)", "fib(5)", "fib(4)", "fib(3)",
+                "fib(2)", "fib(1)", "fib(0)",
+            ]
+        );
+    }
+
+    #[test]
+    fn func_call_presedence() {
+        assert_lines_equal!(
+            r#"
+                let value = null
+                println("is value not null? ", not eq(value, null))
+            "#,
+            vec!["is value not null? false"]
+        );
+    }
+
+    #[test]
+    fn if_with_contained_function_call() {
+        assert_lines_equal!(
+            r#"
+                if eq(true, true) {
+                    print "yes!"
+                }
+            "#,
+            vec!["yes!"]
+        );
+    }
+
+    #[test]
+    fn it_can_escape_block_context_in_touples() {
+        assert_lines_equal!(
+            r#"
+                let call_closure_and_return_true = (inner) {
+                    inner()
+                    ret true
+                }
+                if (call_closure_and_return_true () { println "inner" }) {
+                    println "inside if block"
+                }
+            "#,
+            vec!["inner", "inside if block",]
+        );
+    }
+
+    #[test]
+    fn return_without_args() {
+        assert_lines_equal!(
+            r#"
+                let foo = () {
+                    if true {
+                        ret
+                    }
+
+                    ret "whoops"
+                }
+
+                print foo()
+            "#,
+            vec!["null"]
+        );
+    }
+
+    #[test]
+    fn you_can_create_a_closure_without_args() {
+        assert_lines_equal!(
+            r#"
+                let my_func = {
+                    println "Hello world"
+                }
+
+                my_func()
+            "#,
+            vec!["Hello world"]
+        );
+    }
+
+    #[test]
+    fn you_can_pass_a_closure_with_empty_args_to_a_function() {
+        assert_lines_equal!(
+            r#"
+                let run = (fn) {
+                    println "Running..."
+                    fn()
+                }
+
+                run {
+                    print "Hello world"
+                }
+            "#,
+            vec!["Running...", "Hello world"]
+        );
+    }
+
+    #[test]
+    fn you_can_pass_an_argumentless_closure_to_a_function() {
+        assert_lines_equal!(
+            r#"
+                let run = (fn) {
+                    println "Running..."
+                    fn()
+                }
+
+                run {
+                    print "Hello world"
+                }
+            "#,
+            vec!["Running...", "Hello world"]
+        );
+    }
+
+    #[test]
+    fn you_can_evaluate_a_block_lazily() {
+        assert_lines_equal!(
+            r#"
+                let my_lazy_thing = lazy {
+                    println "resolving"
+                    ret "result"
+                }
+                println "assigned"
+                println my_lazy_thing
+            "#,
+            vec!["assigned", "resolving", "result"]
+        );
+    }
+
+    #[test]
+    fn you_can_evaluate_a_computation_lazily() {
+        assert_lines_equal!(
+            r#"
+                let the_func = {
+                    println "resolving"
+                    ret "result"
+                }
+                let my_lazy_thing = lazy the_func()
+                println "assigned"
+                println my_lazy_thing
+            "#,
+            vec!["assigned", "resolving", "result"]
+        );
+    }
+
+    #[test]
+    fn you_can_escape_quotes_in_a_string() {
+        assert_lines_equal!(
+            r#"
+                println "\""
+            "#,
+            vec!["\""]
+        );
+    }
+
+    #[test]
+    fn you_can_escape_tabs_in_a_string() {
+        assert_lines_equal!(
+            r#"
+                println "\t"
+            "#,
+            vec!["\t"]
+        );
     }
 }

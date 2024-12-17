@@ -91,6 +91,23 @@ pub enum Expression {
     List(List),
     Access(Access),
     ImportExpr(ImportExpr),
+    Lazy(Box<LazyExpression>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LazyExpression {
+    pub expr: Expression,
+    pub scope: Rc<Scope>,
+}
+
+impl LazyExpression {
+    pub fn eval<W: Write>(
+        &self,
+        output: &Rc<RefCell<W>>,
+        scope: &Rc<Scope>,
+    ) -> Result<Expression, LocError> {
+        eval_expr_and_call_returned_block(&self.expr, output, scope)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +115,103 @@ pub struct ImportExpr {
     pub loc: Loc,
     pub source: String,
     pub symbols: Vec<Token>,
+}
+
+impl ImportExpr {
+    pub fn is_relative(&self) -> Result<bool, LocError> {
+        let chars = self.source.chars().collect::<Vec<char>>();
+
+        if let Some(ch) = chars.get(0) {
+            return Ok(*ch == '.' || *ch == '/');
+        }
+
+        Err(self.loc.error("Invalid import specifier"))
+    }
+
+    fn resolve_relative<W: Write>(&self, output: &Rc<RefCell<W>>, scope: &Rc<Scope>) -> Result<String, LocError> {
+        let current_filename = scope
+            .get("__filename")
+            .ok_or_else(|| {
+                self.loc
+                    .error("__filename is unavailable or invalid. Cannot import")
+            })?
+            .as_string(&self.loc, output, scope)?;
+
+        let current_dir = Path::new(&current_filename).parent().ok_or_else(|| {
+            self
+                .loc
+                .error(&format!("Failed to import '{}'", self.source))
+        })?;
+
+        let resolved = self.source.resolve_in(current_dir);
+
+        let final_path = resolved.to_str()
+            .ok_or_else(|| {
+                self
+                    .loc
+                    .error(&format!("Failed to import '{}'", self.source))
+            })?;
+
+        Ok(final_path.to_string())
+    }
+
+    fn could_not_resolve<T>(&self) -> Result<T, LocError> {
+        Err(self.loc.error(&format!("Could not resolve '{}'", self.source)))
+    }
+
+    pub fn eval<W: Write>(&self, output: &Rc<RefCell<W>>, scope: &Rc<Scope>) -> Result<Expression, LocError> {
+        let remote_scope = if self.is_relative()? {
+            self.get_scope_of_relative_import(output, scope)?
+        } else {
+            self.get_scope_of_external_import()?
+        };
+
+        for ident in &self.symbols {
+            let value = remote_scope.get(&ident.value).ok_or_else(|| {
+                ident.loc.error(&format!(
+                    "Symbol '{}' was not exported from '{}'",
+                    &ident.value, self.source
+                ))
+            })?;
+
+            scope.assign(ident.value.clone(), value);
+        }
+
+        Ok(Expression::Null)
+    }
+
+    pub fn get_scope_of_external_import(&self) -> Result<Rc<Scope>, LocError> {
+        if self.source == "core" {
+            let scope = Scope::new();
+            scope.assign("env".to_string(), fun_core_env());
+            scope.assign("http".to_string(), fun_core_http());
+            Ok(Rc::new(scope))
+        } else {
+            self.could_not_resolve()
+        }
+    }
+
+    pub fn get_scope_of_relative_import<W: Write>(&self, output: &Rc<RefCell<W>>, scope: &Rc<Scope>) -> Result<Rc<Scope>, LocError> {
+        let bytes = fs::read(&self.resolve_relative(output, scope)?).map_err(|_| {
+            self
+                .loc
+                .error(&format!("Failed to import '{}'", self.source))
+        })?;
+
+        let source = String::from_utf8(bytes).map_err(|_| {
+            self
+                .loc
+                .error(&format!("Failed to import '{}'", self.source))
+        })?;
+
+        let tokens = &lex(&source);
+        let ast = parse(tokens)?;
+
+        let remote_scope = Rc::new(Scope::new());
+        eval_expr_list(&ast.expressions, output, &remote_scope)?;
+
+        Ok(remote_scope)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +278,13 @@ fn join(sep: &str, values: Vec<String>) -> String {
 }
 
 impl Expression {
+    pub fn is_touple(&self) -> bool {
+        match self {
+            Expression::Touple(_) => true,
+            _ => false,
+        }
+    }
+
     pub fn debug_str(&self) -> String {
         match self {
             Expression::String(s) => format!("\"{}\"", s.clone()),
@@ -171,6 +292,7 @@ impl Expression {
             Expression::FuncCall(_f) => "func_call".to_string(),
             Expression::List(list) => format!("[{}]", expr_list_debug_str(", ", &list.items)),
             Expression::Access(access) => format!("{}.{}", access.target.debug_str(), access.key),
+            Expression::Lazy(lazy_expr) => format!("lazy {}", lazy_expr.expr.debug_str()),
             Expression::ImportExpr(import_expr) => {
                 let imported = import_expr
                     .symbols
@@ -304,6 +426,7 @@ impl Expression {
             Expression::List(_) => "list",
             Expression::Access(_) => "access",
             Expression::ImportExpr(_) => "import",
+            Expression::Lazy(_) => "lazy",
         }
     }
 
@@ -404,6 +527,7 @@ impl Expression {
                         "and" => return fun_and(&scope, output, &*func_call),
                         "modulo" => return fun_modulo(scope, output, &*func_call),
                         "Map" => return fun_create_map(scope, output, &*func_call.arg),
+                        "lazy" => return fun_lazy(scope, output, &func_call),
                         _ => {}
                     }
                 }
@@ -422,7 +546,7 @@ impl Expression {
 
                 if reassignment.ident.accessors.len() == 1 {
                     let token = reassignment.ident.accessors[0].clone();
-                    scope.set(&token.loc, token.value, assigned_value.clone())?;
+                    scope.reassign(&token.loc, token.value, assigned_value.clone())?;
                     return Ok(assigned_value.clone());
                 }
 
@@ -538,55 +662,7 @@ impl Expression {
                 _ => Err(access.loc.error("Not able to call method on value")),
             },
             Expression::ImportExpr(import_expr) => {
-                let current_filename = scope
-                    .get("__filename")
-                    .ok_or_else(|| {
-                        import_expr
-                            .loc
-                            .error("__filename is unavailable or invalid. Cannot import")
-                    })?
-                    .as_string(&import_expr.loc, output, scope)?;
-
-                let current_dir = Path::new(&current_filename).parent().ok_or_else(|| {
-                    import_expr
-                        .loc
-                        .error(&format!("Failed to import '{}'", import_expr.source))
-                })?;
-
-                let resolved = import_expr.source.resolve_in(current_dir);
-
-                let bytes = fs::read(&resolved).map_err(|_| {
-                    import_expr
-                        .loc
-                        .error(&format!("Failed to import '{}'", import_expr.source))
-                })?;
-
-                let source = String::from_utf8(bytes).map_err(|_| {
-                    import_expr
-                        .loc
-                        .error(&format!("Failed to import '{}'", import_expr.source))
-                })?;
-
-                let tokens = &lex(&source);
-
-                let ast = parse(tokens)?;
-
-                let remote_scope = Rc::new(Scope::new());
-
-                eval_expr_list(&ast.expressions, output, &remote_scope)?;
-
-                for ident in &import_expr.symbols {
-                    let value = remote_scope.get(&ident.value).ok_or_else(|| {
-                        import_expr.loc.error(&format!(
-                            "Symbol '{}' was not exported from '{}'",
-                            &ident.value, import_expr.source
-                        ))
-                    })?;
-
-                    scope.assign(ident.value.clone(), value);
-                }
-
-                Ok(Expression::Null)
+                import_expr.eval(output, scope)
             }
             _ => {
                 todo!("Failed to eval expression {:?}", self);
@@ -620,6 +696,9 @@ impl Expression {
                 Ok(result)
             }
             Expression::Bool(value) => Ok(value.to_string()),
+            Expression::Lazy(lazy_expr) => {
+                lazy_expr.eval(output, scope)?.as_string(loc, output, scope)
+            }
             Expression::Null => Ok(String::from("null")),
             Expression::Return(expression) => expression.as_string(loc, output, scope),
             Expression::List(list) => list.as_string(output, scope),
@@ -765,7 +844,7 @@ impl Scope {
         expr
     }
 
-    pub fn set(&self, loc: &Loc, ident: String, expr: Expression) -> Result<Expression, LocError> {
+    pub fn reassign(&self, loc: &Loc, ident: String, expr: Expression) -> Result<Expression, LocError> {
         let val = {
             let values = self.values.borrow();
             values.get(&ident).cloned()
@@ -788,7 +867,7 @@ impl Scope {
                         ))
                     })?
                     .borrow();
-                parent.set(&loc, ident, expr)
+                parent.reassign(&loc, ident, expr)
             }
         }
     }
@@ -804,19 +883,6 @@ impl Scope {
                 let parent = self.parent.as_ref()?.borrow();
                 parent.get(ident).clone()
             }
-        }
-    }
-
-    pub fn debug(&self) {
-        println!("<scope debug>");
-        self.do_debug();
-        println!("</scope debug>");
-    }
-
-    fn do_debug(&self) {
-        println!("{:?}", self.values.borrow().keys());
-        if self.parent != None {
-            self.parent.clone().unwrap().borrow().do_debug();
         }
     }
 }
