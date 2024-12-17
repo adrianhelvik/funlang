@@ -1,6 +1,7 @@
 pub mod builtins;
 pub mod context;
 pub mod interpreter;
+pub mod scope;
 pub mod lexer;
 pub mod parser;
 pub mod types;

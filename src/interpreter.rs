@@ -1,4 +1,5 @@
 use crate::context::FunContext;
+use crate::scope::Scope;
 use crate::types::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,6 +21,7 @@ pub fn eval_program<W: Write>(
     let ctx = FunContext {
         scope,
         output: Rc::clone(output),
+        filename: filename.to_string(),
     };
 
     eval_expr_list(&program.expressions, &ctx)?;
@@ -60,6 +62,7 @@ pub fn eval_expr_and_call_returned_block<W: Write>(
             let child_ctx = FunContext {
                 scope: Rc::new(child_scope),
                 output: Rc::clone(&ctx.output),
+                filename: ctx.filename.clone(),
             };
             // TODO: Consider if I want this
             let value = Expression::Block(FuncCall {
@@ -105,6 +108,7 @@ pub fn call_func_expr<W: Write>(
             &FunContext {
                 scope: Rc::clone(&closure.scope),
                 output: Rc::clone(&ctx.output),
+                filename: ctx.filename.clone(),
             }
         ),
         Expression::FuncExpr(func_expr) => call_func(&func_expr, &func_call, ctx, ctx),
@@ -156,6 +160,7 @@ pub fn call_func<W: Write>(
         // Scoped to the enclosing context
         scope: Rc::new(Scope::create(&enclosing_ctx.scope)),
         output: Rc::clone(&ctx.output),
+        filename: ctx.filename.clone(),
     };
 
     let passed_in_args = func_call.arg.as_vec();

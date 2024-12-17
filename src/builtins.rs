@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, io::Write, rc::Rc};
 
-use crate::{context::FunContext, Expression, FuncCall, LazyExpression, LocError, Scope};
+use crate::{context::FunContext, scope::Scope, Expression, FuncCall, LazyExpression, LocError};
 
 pub fn fun_add<W: Write>(
     ctx: &FunContext<W>,

@@ -15,6 +15,7 @@ use crate::interpreter::eval_expr_and_call_returned_block;
 use crate::interpreter::eval_expr_list;
 use crate::lexer::lex;
 use crate::parser::parse;
+use crate::scope::Scope;
 
 fn expr_list_debug_str(delimiter: &str, expressions: &Vec<Expression>) -> String {
     join(
@@ -132,13 +133,7 @@ impl ImportExpr {
         &self,
         ctx: &FunContext<W>,
     ) -> Result<String, LocError> {
-        let current_filename = ctx.scope
-            .get("__filename")
-            .ok_or_else(|| {
-                self.loc
-                    .error("__filename is unavailable or invalid. Cannot import")
-            })?
-            .as_string(&self.loc, ctx)?;
+        let current_filename = ctx.filename.clone();
 
         let current_dir = Path::new(&current_filename).parent().ok_or_else(|| {
             self.loc
@@ -197,7 +192,9 @@ impl ImportExpr {
         &self,
         ctx: &FunContext<W>,
     ) -> Result<Rc<Scope>, LocError> {
-        let bytes = fs::read(&self.resolve_relative(ctx)?).map_err(|_| {
+        let filename = &self.resolve_relative(ctx)?;
+
+        let bytes = fs::read(filename).map_err(|_| {
             self.loc
                 .error(&format!("Failed to import '{}'", self.source))
         })?;
@@ -212,9 +209,12 @@ impl ImportExpr {
 
         let remote_scope = Rc::new(Scope::new());
 
+        remote_scope.assign("__filename".to_string(), Expression::String(filename.clone()));
+
         let remote_ctx = FunContext {
             scope: Rc::clone(&remote_scope),
             output: Rc::clone(&ctx.output),
+            filename: filename.clone(),
         };
         eval_expr_list(&ast.expressions, &remote_ctx)?;
 
@@ -632,6 +632,7 @@ impl Expression {
                     let child_ctx = FunContext {
                         scope: Rc::new(Scope::create(&ctx.scope)),
                         output: Rc::clone(&ctx.output),
+                        filename: ctx.filename.clone(),
                     };
                     child_ctx.scope.assign(ident.ident.clone(), Expression::Int(i));
                     last = eval_expr_list(&body, &child_ctx)?;
@@ -649,6 +650,7 @@ impl Expression {
                     let child_ctx = FunContext {
                         scope: Rc::new(Scope::create(&ctx.scope)),
                         output: Rc::clone(&ctx.output),
+                        filename: ctx.filename.clone(),
                     };
                     last = eval_expr_list(&body, &child_ctx)?;
                 }
@@ -827,81 +829,6 @@ pub struct FuncExpr {
     pub expressions: Vec<Expression>,
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Scope {
-    pub values: Box<RefCell<HashMap<String, Expression>>>,
-    pub parent: Option<RefCell<Rc<Scope>>>,
-}
-
-impl Scope {
-    pub fn new() -> Self {
-        Scope {
-            values: Box::new(RefCell::new(HashMap::new())),
-            parent: None,
-        }
-    }
-
-    pub fn create(parent: &Rc<Scope>) -> Self {
-        Scope {
-            values: Box::new(RefCell::new(HashMap::new())),
-            parent: Some(Rc::clone(parent).into()),
-        }
-    }
-
-    pub fn assign(&self, ident: String, expr: Expression) -> Expression {
-        self.values
-            .borrow_mut()
-            .insert(ident.to_string(), expr.clone());
-        expr
-    }
-
-    pub fn reassign(
-        &self,
-        loc: &Loc,
-        ident: String,
-        expr: Expression,
-    ) -> Result<Expression, LocError> {
-        let val = {
-            let values = self.values.borrow();
-            values.get(&ident).cloned()
-        };
-        match val {
-            Some(_) => {
-                self.values
-                    .borrow_mut()
-                    .insert(ident.to_string(), expr.clone());
-                Ok(expr)
-            }
-            None => {
-                let parent = self
-                    .parent
-                    .as_ref()
-                    .ok_or_else(|| {
-                        loc.error(&format!(
-                            "Attempted to reassign undeclared variable '{}'",
-                            ident.clone()
-                        ))
-                    })?
-                    .borrow();
-                parent.reassign(&loc, ident, expr)
-            }
-        }
-    }
-
-    pub fn has(&self, ident: String) -> bool {
-        self.values.borrow().contains_key(&ident)
-    }
-
-    pub fn get(&self, ident: &str) -> Option<Expression> {
-        match self.values.borrow().get(ident) {
-            Some(expr) => Some(expr.clone()),
-            None => {
-                let parent = self.parent.as_ref()?.borrow();
-                parent.get(ident).clone()
-            }
-        }
-    }
-}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Loc {
