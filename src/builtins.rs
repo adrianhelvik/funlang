@@ -156,6 +156,32 @@ pub fn fun_gte<W: Write>(
     Ok(Expression::Bool(true))
 }
 
+pub fn fun_gt<W: Write>(
+    ctx: &FunCtx<W>,
+    func_call: &FuncCall,
+) -> Result<Expression, LocError> {
+    let values = func_call.arg.eval(ctx)?.as_vec();
+
+    if values.len() > 0 {
+        let mut first =
+            values[0]
+                .eval(ctx)?
+                .as_int(&func_call.ident.loc(), ctx)?;
+        for i in 1..values.len() {
+            let second =
+                values[i]
+                    .eval(ctx)?
+                    .as_int(&func_call.ident.loc(), ctx)?;
+            if !(first > second) {
+                return Ok(Expression::Bool(false));
+            }
+            first = second;
+        }
+    }
+
+    Ok(Expression::Bool(true))
+}
+
 pub fn fun_create_map() -> Result<Expression, LocError> {
     Ok(Expression::Map(Rc::new(RefCell::new(HashMap::new()))))
 }
@@ -215,8 +241,6 @@ pub fn fun_and<W: Write>(
     ctx: &FunCtx<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    println!("FUN OR: {}", func_call.arg.debug_str());
-
     let expressions = func_call.arg.eval(ctx)?.as_vec();
 
     if expressions.len() < 1 {
@@ -225,8 +249,6 @@ pub fn fun_and<W: Write>(
 
     for expression in expressions {
         let value = expression.eval(ctx)?;
-
-        println!("value: {}", value.debug_str());
 
         if !value.as_bool()? {
             return Ok(Expression::Bool(false));

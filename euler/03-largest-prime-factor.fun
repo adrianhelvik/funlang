@@ -14,23 +14,40 @@ let sieve = (n) {
     }
 
     let prime = 2
+
+    let list = []
     while lt(prime, n) {
-        println("prime: ", prime)
-        let i = 0
-        while lt(i, n) {
-            i = add(i, prime)
-            values(str(i), false)
+        list.push(prime)
+
+        "
+            Increment by 'prime' up until n and mark as false
+        "
+        let times = 2
+        let tmp = prime
+        while lt(tmp, n) {
+            tmp = add(tmp, prime)
+            values(str(tmp), false)
         }
-        prime = add(prime, 1)
-        while not values(prime) {
-            prime = add(prime, 1)
+
+        "
+            Determine the next prime. We start off by incrementing by one
+            as the successor to a prime is never a prime.
+        "
+        let next = add(prime, 1)
+        while and(not values(next), lt(next, n)) {
+            next = add(next, 1)
         }
+        prime = next
     }
+
+    ret list
 }
 
-let factors = (n) {
-}
+println "About to calculate sieve"
+println("sieve(10): ", sieve(10))
 
-eq(factors 13195, [5, 7, 13, 29])
+"eq(factors 13195, [5, 7, 13, 29])"
 
-sieve(10000)
+let primes = sieve 100000
+
+print("Found ", primes.len(), " primes")

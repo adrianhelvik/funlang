@@ -84,6 +84,12 @@ pub enum Expression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RangeLiteral {
+    pub start: Expression,
+    pub end: Expression
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum BuiltinName {
     ListPush,
     ListLen,
@@ -142,8 +148,7 @@ pub struct IfExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForExpr {
     pub identifier: Variable,
-    pub start: Box<Expression>,
-    pub end: Box<Expression>,
+    pub range: Box<RangeLiteral>,
     pub body: Vec<Expression>,
 }
 

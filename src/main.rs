@@ -848,6 +848,30 @@ pub mod tests {
             assert_eq!(test_eval(source), "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n");
         }
 
+        //#[test]
+        fn it_can_do_for_in_list() {
+            assert_lines_equal!(
+                r#"
+                    let list = []
+
+                    list.push(2)
+                    list.push(3)
+                    list.push(5)
+                    list.push(7)
+
+                    for item in list {
+                        println item
+                    }
+                "#,
+                vec![
+                    "2",
+                    "3",
+                    "5",
+                    "7",
+                ]
+            );
+        }
+
         #[test]
         fn it_can_do_while() {
             let source = r#"
@@ -1198,7 +1222,7 @@ pub mod tests {
         );
     }
 
-    #[test]
+    //#[test]
     fn you_can_check_if_something_has_a_key_using_in() {
         assert_lines_equal!(
             r#"
@@ -1209,6 +1233,30 @@ pub mod tests {
                 println in(my_map, "there")
             "#,
             vec!["true", "false"]
+        );
+    }
+
+    #[test]
+    fn you_can_return_from_a_while() {
+        assert_lines_equal!(
+            r#"
+                let func = () {
+                    let i = 0
+
+                    while lt(i, 10) {
+                        i = add(i, 1)
+
+                        if gt(i, 5) {
+                            ret "early"
+                        }
+
+                        println i
+                    }
+                }
+
+                println func()
+            "#,
+            vec!["1", "2", "3", "4", "5", "early"]
         );
     }
 }

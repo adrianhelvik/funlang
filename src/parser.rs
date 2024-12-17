@@ -405,13 +405,26 @@ fn parse_if_expr(state: &State) -> ER {
     ))
 }
 
+fn take_range(state: &State) -> Result<(RangeLiteral, State), ParseError> {
+    let (start_expr, state) = parse_block_arg_expr(&state)?;
+    let state = take("..", &state)?;
+    let (end_expr, state) = parse_block_arg_expr(&state)?;
+
+    let range = RangeLiteral {
+        start: start_expr,
+        end: end_expr,
+    };
+
+    Ok((range, state))
+}
+
 fn parse_for_expr(state: &State) -> ER {
     let state = take("for", &state)?;
     let (ident, state) = take_ident_token(&state)?;
     let state = require("in", &state, "Missing 'in' keyword in for-loop")?;
-    let (start_expr, state) = parse_block_arg_expr(&state)?;
-    let state = take("..", &state)?;
-    let (end_expr, state) = parse_block_arg_expr(&state)?;
+
+    let (range, state) = take_range(&state)?;
+
     let state = require("{", &state, "Missing opening brace")?;
     let (expressions, state) = parse_expr_list(&state)?;
     let state = skip_all("\n", state);
@@ -419,8 +432,7 @@ fn parse_for_expr(state: &State) -> ER {
 
     let for_expr = ForExpr {
         identifier: ident.to_variable(),
-        start: Box::new(start_expr),
-        end: Box::new(end_expr),
+        range: Box::new(range),
         body: expressions,
     };
 
@@ -1417,8 +1429,10 @@ mod tests {
                     ident: "i".to_string(),
                     loc: Loc::new(1, 5),
                 },
-                start: Box::new(Expression::Int(0)),
-                end: Box::new(Expression::Int(10)),
+                range: Box::new(RangeLiteral {
+                    start: Expression::Int(0),
+                    end: Expression::Int(10),
+                }),
                 body: vec![Expression::Int(123),],
             })
         );
@@ -1439,8 +1453,10 @@ mod tests {
                     ident: String::from("i"),
                     loc: Loc { line: 1, column: 5 },
                 },
-                start: Box::new(Expression::Int(0)),
-                end: Box::new(Expression::Int(10)),
+                range: Box::new(RangeLiteral {
+                    start: Expression::Int(0),
+                    end: Expression::Int(10),
+                }),
                 body: vec![Expression::Int(123),],
             })])
         );
@@ -1499,8 +1515,10 @@ mod tests {
                             column: 17
                         },
                     },
-                    start: Box::new(Expression::Int(0)),
-                    end: Box::new(Expression::Int(10)),
+                    range: Box::new(RangeLiteral {
+                        start: Expression::Int(0),
+                        end: Expression::Int(10),
+                    }),
                     body: vec![Expression::Int(123),],
                 }),
                 Expression::VarDecl(Box::new(VarDecl {

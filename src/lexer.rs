@@ -57,6 +57,11 @@ pub fn lex(source: &str) -> Vec<Token> {
             }
             string = !string;
         } else if string {
+            if c == '\n' {
+                *line.borrow_mut() += 1;
+                column.replace(1);
+            }
+
             if escaped {
                 // We only handle escaped " here,
                 // so add back the backslash for

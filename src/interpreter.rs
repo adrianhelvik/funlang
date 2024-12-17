@@ -425,8 +425,8 @@ impl Expression {
                 format!(
                     "for {} in {}..{} {{ {} }}",
                     for_expr.identifier.ident,
-                    for_expr.start.debug_str(),
-                    for_expr.end.debug_str(),
+                    for_expr.range.start.debug_str(),
+                    for_expr.range.end.debug_str(),
                     body_debug_str
                 )
             }
@@ -644,6 +644,7 @@ impl Expression {
                         "lte" => return fun_lte(ctx, &*func_call),
                         "lt" => return fun_lt(ctx, &*func_call),
                         "gte" => return fun_gte(ctx, &*func_call),
+                        "gt" => return fun_gt(ctx, &*func_call),
                         "or" => return fun_or(ctx, &*func_call),
                         "type" => return fun_type(ctx, &func_call),
                         "etype" => return fun_etype(&func_call),
@@ -725,8 +726,9 @@ impl Expression {
             }))),
             Expression::ForExpr(for_expr) => {
                 let ident = &for_expr.identifier;
-                let start = for_expr.start.as_int(&ident.loc, ctx)?;
-                let end = for_expr.end.as_int(&ident.loc, ctx)?;
+                let range = &for_expr.range;
+                let start = range.start.as_int(&ident.loc, ctx)?;
+                let end = range.end.as_int(&ident.loc, ctx)?;
                 let body = &for_expr.body;
 
                 let mut last = Expression::Null;
