@@ -1,3 +1,4 @@
+use crate::context::FunContext;
 use crate::types::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,20 +17,24 @@ pub fn eval_program<W: Write>(
         Expression::String(filename.to_string()),
     );
 
-    eval_expr_list(&program.expressions, output, &scope)?;
+    let ctx = FunContext {
+        scope,
+        output: Rc::clone(output),
+    };
+
+    eval_expr_list(&program.expressions, &ctx)?;
 
     Ok(())
 }
 
 pub fn eval_expr_list<W: Write>(
     expressions: &Vec<Expression>,
-    output: &Rc<RefCell<W>>,
-    scope: &Rc<Scope>,
+    ctx: &FunContext<W>,
 ) -> Result<Expression, LocError> {
     let mut value = Expression::Null;
 
     for expr in expressions {
-        value = expr.eval(output, scope)?;
+        value = expr.eval(ctx)?;
 
         if let Expression::Return(result) = value {
             return Ok(Expression::Return(result));
@@ -41,19 +46,21 @@ pub fn eval_expr_list<W: Write>(
 
 pub fn eval_expr_and_call_returned_block<W: Write>(
     expr: &Expression,
-    output: &Rc<RefCell<W>>,
-    scope: &Rc<Scope>,
+    ctx: &FunContext<W>,
 ) -> Result<Expression, LocError> {
-    let res = expr.eval(output, scope)?;
+    let res = expr.eval(ctx)?;
 
     match res {
         Expression::Closure(closure) => {
-            let child_scope = Scope::create(scope);
+            let child_scope = Scope::create(&ctx.scope);
             child_scope.assign(
                 String::from("__block__"),
                 Expression::FuncExpr(closure.func_expr),
             );
-            let child_scope = Rc::new(child_scope);
+            let child_ctx = FunContext {
+                scope: Rc::new(child_scope),
+                output: Rc::clone(&ctx.output),
+            };
             // TODO: Consider if I want this
             let value = Expression::Block(FuncCall {
                 ident: Identifier {
@@ -64,7 +71,7 @@ pub fn eval_expr_and_call_returned_block<W: Write>(
                 },
                 arg: Box::new(Expression::Null),
             })
-            .eval(output, &child_scope)?;
+            .eval(&child_ctx)?;
             Ok(value)
         }
         other => Ok(other),
@@ -78,9 +85,7 @@ pub fn lookup(scope: &Rc<Scope>, ident: &Identifier) -> Result<(Expression, Loc)
 
     for i in 1..ident.accessors.len() {
         let token = &ident.accessors[i];
-        value = value
-            .get_by_key(&token.value)
-            .ok_or_else(|| token.loc.error("Failed to look up"))?
+        value = value.get_by_key_token(&token)?;
     }
 
     Ok((value, ident.accessors.last().unwrap().loc.clone()))
@@ -88,21 +93,22 @@ pub fn lookup(scope: &Rc<Scope>, ident: &Identifier) -> Result<(Expression, Loc)
 
 pub fn call_func_expr<W: Write>(
     func_call: &FuncCall,
-    output: &Rc<RefCell<W>>,
-    scope: &Rc<Scope>,
+    ctx: &FunContext<W>,
 ) -> Result<Expression, LocError> {
-    let (expression, loc) = lookup(scope, &func_call.ident)?;
+    let (expression, loc) = lookup(&ctx.scope, &func_call.ident)?;
 
     match expression {
         Expression::Closure(closure) => call_func(
             &closure.func_expr,
-            &func_call,
-            output,
-            &closure.scope,
-            scope,
+            func_call,
+            ctx,
+            &FunContext {
+                scope: Rc::clone(&closure.scope),
+                output: Rc::clone(&ctx.output),
+            }
         ),
-        Expression::FuncExpr(func_expr) => call_func(&func_expr, &func_call, output, scope, scope),
-        Expression::Map(map) => call_map(&loc, &map, func_call, output, scope),
+        Expression::FuncExpr(func_expr) => call_func(&func_expr, &func_call, ctx, ctx),
+        Expression::Map(map) => call_map(&loc, &map, func_call, ctx),
         expression => Err(loc.error(&format!(
             "expression of type '{}' is not callable. (value = {})",
             expression.type_str(),
@@ -115,14 +121,13 @@ fn call_map<W: Write>(
     loc: &Loc,
     map: &Rc<RefCell<HashMap<String, Expression>>>,
     func_call: &FuncCall,
-    output: &Rc<RefCell<W>>,
-    scope: &Rc<Scope>,
+    ctx: &FunContext<W>,
 ) -> Result<Expression, LocError> {
     let args = func_call.arg.as_vec();
 
     match args.len() {
         1 => {
-            let key = args[0].eval(output, scope)?.as_string(loc, output, scope)?;
+            let key = args[0].eval(ctx)?.as_string(loc, ctx)?;
             let val = match map.borrow().get(&key) {
                 Some(expr) => expr.clone(),
                 None => Expression::Null,
@@ -130,8 +135,8 @@ fn call_map<W: Write>(
             Ok(val)
         }
         2 => {
-            let key = args[0].eval(output, scope)?.as_string(loc, output, scope)?;
-            let val = args[1].eval(output, scope)?;
+            let key = args[0].eval(ctx)?.as_string(loc, ctx)?;
+            let val = args[1].eval(ctx)?;
             map.borrow_mut().insert(key, val.clone());
             Ok(val)
         }
@@ -144,24 +149,27 @@ fn call_map<W: Write>(
 pub fn call_func<W: Write>(
     func_expr: &FuncExpr,
     func_call: &FuncCall,
-    output: &Rc<RefCell<W>>,
-    scope: &Rc<Scope>,
-    parent_scope: &Rc<Scope>,
+    ctx: &FunContext<W>,
+    enclosing_ctx: &FunContext<W>,
 ) -> Result<Expression, LocError> {
-    let function_scope = Rc::new(Scope::create(scope));
+    let function_ctx = FunContext {
+        // Scoped to the enclosing context
+        scope: Rc::new(Scope::create(&enclosing_ctx.scope)),
+        output: Rc::clone(&ctx.output),
+    };
 
     let passed_in_args = func_call.arg.as_vec();
 
     for (i, ident) in func_expr.args.iter().enumerate() {
         if let Some(arg) = passed_in_args.get(i) {
-            let value = arg.eval(output, parent_scope)?;
-            function_scope.assign(ident.clone(), value);
+            let value = arg.eval(ctx)?;
+            function_ctx.scope.assign(ident.clone(), value);
         } else {
-            function_scope.assign(ident.clone(), Expression::Null);
+            function_ctx.scope.assign(ident.clone(), Expression::Null);
         }
     }
 
-    let result = eval_expr_list(&func_expr.expressions, output, &function_scope)?;
+    let result = eval_expr_list(&func_expr.expressions, &function_ctx)?;
 
     Ok(result)
 }

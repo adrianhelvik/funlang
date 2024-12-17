@@ -9,6 +9,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::builtins::*;
+use crate::context::FunContext;
 use crate::interpreter::call_func_expr;
 use crate::interpreter::eval_expr_and_call_returned_block;
 use crate::interpreter::eval_expr_list;
@@ -103,10 +104,9 @@ pub struct LazyExpression {
 impl LazyExpression {
     pub fn eval<W: Write>(
         &self,
-        output: &Rc<RefCell<W>>,
-        scope: &Rc<Scope>,
+        ctx: &FunContext<W>
     ) -> Result<Expression, LocError> {
-        eval_expr_and_call_returned_block(&self.expr, output, scope)
+        eval_expr_and_call_returned_block(&self.expr, ctx)
     }
 }
 
@@ -128,40 +128,45 @@ impl ImportExpr {
         Err(self.loc.error("Invalid import specifier"))
     }
 
-    fn resolve_relative<W: Write>(&self, output: &Rc<RefCell<W>>, scope: &Rc<Scope>) -> Result<String, LocError> {
-        let current_filename = scope
+    fn resolve_relative<W: Write>(
+        &self,
+        ctx: &FunContext<W>,
+    ) -> Result<String, LocError> {
+        let current_filename = ctx.scope
             .get("__filename")
             .ok_or_else(|| {
                 self.loc
                     .error("__filename is unavailable or invalid. Cannot import")
             })?
-            .as_string(&self.loc, output, scope)?;
+            .as_string(&self.loc, ctx)?;
 
         let current_dir = Path::new(&current_filename).parent().ok_or_else(|| {
-            self
-                .loc
+            self.loc
                 .error(&format!("Failed to import '{}'", self.source))
         })?;
 
         let resolved = self.source.resolve_in(current_dir);
 
-        let final_path = resolved.to_str()
-            .ok_or_else(|| {
-                self
-                    .loc
-                    .error(&format!("Failed to import '{}'", self.source))
-            })?;
+        let final_path = resolved.to_str().ok_or_else(|| {
+            self.loc
+                .error(&format!("Failed to import '{}'", self.source))
+        })?;
 
         Ok(final_path.to_string())
     }
 
     fn could_not_resolve<T>(&self) -> Result<T, LocError> {
-        Err(self.loc.error(&format!("Could not resolve '{}'", self.source)))
+        Err(self
+            .loc
+            .error(&format!("Could not resolve '{}'", self.source)))
     }
 
-    pub fn eval<W: Write>(&self, output: &Rc<RefCell<W>>, scope: &Rc<Scope>) -> Result<Expression, LocError> {
+    pub fn eval<W: Write>(
+        &self,
+        ctx: &FunContext<W>,
+    ) -> Result<Expression, LocError> {
         let remote_scope = if self.is_relative()? {
-            self.get_scope_of_relative_import(output, scope)?
+            self.get_scope_of_relative_import(ctx)?
         } else {
             self.get_scope_of_external_import()?
         };
@@ -174,7 +179,7 @@ impl ImportExpr {
                 ))
             })?;
 
-            scope.assign(ident.value.clone(), value);
+            ctx.scope.assign(ident.value.clone(), value);
         }
 
         Ok(Expression::Null)
@@ -182,25 +187,23 @@ impl ImportExpr {
 
     pub fn get_scope_of_external_import(&self) -> Result<Rc<Scope>, LocError> {
         if self.source == "core" {
-            let scope = Scope::new();
-            scope.assign("env".to_string(), fun_core_env());
-            scope.assign("http".to_string(), fun_core_http());
-            Ok(Rc::new(scope))
+            Ok(Rc::new(fun_core_module()))
         } else {
             self.could_not_resolve()
         }
     }
 
-    pub fn get_scope_of_relative_import<W: Write>(&self, output: &Rc<RefCell<W>>, scope: &Rc<Scope>) -> Result<Rc<Scope>, LocError> {
-        let bytes = fs::read(&self.resolve_relative(output, scope)?).map_err(|_| {
-            self
-                .loc
+    pub fn get_scope_of_relative_import<W: Write>(
+        &self,
+        ctx: &FunContext<W>,
+    ) -> Result<Rc<Scope>, LocError> {
+        let bytes = fs::read(&self.resolve_relative(ctx)?).map_err(|_| {
+            self.loc
                 .error(&format!("Failed to import '{}'", self.source))
         })?;
 
         let source = String::from_utf8(bytes).map_err(|_| {
-            self
-                .loc
+            self.loc
                 .error(&format!("Failed to import '{}'", self.source))
         })?;
 
@@ -208,7 +211,12 @@ impl ImportExpr {
         let ast = parse(tokens)?;
 
         let remote_scope = Rc::new(Scope::new());
-        eval_expr_list(&ast.expressions, output, &remote_scope)?;
+
+        let remote_ctx = FunContext {
+            scope: Rc::clone(&remote_scope),
+            output: Rc::clone(&ctx.output),
+        };
+        eval_expr_list(&ast.expressions, &remote_ctx)?;
 
         Ok(remote_scope)
     }
@@ -230,13 +238,12 @@ pub struct List {
 impl List {
     pub fn eval<W: Write>(
         &self,
-        output: &Rc<RefCell<W>>,
-        scope: &Rc<Scope>,
+        ctx: &FunContext<W>,
     ) -> Result<List, LocError> {
         let mut items = vec![];
 
         for expr in &self.items {
-            items.push(expr.eval(output, scope)?);
+            items.push(expr.eval(ctx)?);
         }
 
         Ok(List {
@@ -247,13 +254,12 @@ impl List {
 
     fn as_string<W: Write>(
         &self,
-        output: &Rc<RefCell<W>>,
-        scope: &Rc<Scope>,
+        ctx: &FunContext<W>,
     ) -> Result<String, LocError> {
         let mut stringified_items = vec![];
 
         for item in &self.items {
-            stringified_items.push(item.as_string(&self.loc, output, scope)?);
+            stringified_items.push(item.as_string(&self.loc, ctx)?);
         }
 
         return Ok(format!("[{}]", join(", ", stringified_items)));
@@ -440,10 +446,9 @@ impl Expression {
     pub fn as_int<W: Write>(
         &self,
         loc: &Loc,
-        output: &Rc<RefCell<W>>,
-        scope: &Rc<Scope>,
+        ctx: &FunContext<W>,
     ) -> Result<i64, LocError> {
-        match self.eager_eval(output, scope)? {
+        match self.eager_eval(ctx)? {
             Expression::Int(int) => Ok(int.clone()),
             _ => Err(loc.error(&format!("Failed to convert {} to Int", self.type_str()))),
         }
@@ -468,10 +473,9 @@ impl Expression {
 
     pub fn eager_eval<W: Write>(
         &self,
-        output: &Rc<RefCell<W>>,
-        scope: &Rc<Scope>,
+        ctx: &FunContext<W>
     ) -> Result<Expression, LocError> {
-        match self.eval(output, scope)? {
+        match self.eval(ctx)? {
             Expression::Return(expr) => Ok(*expr),
             other => Ok(other),
         }
@@ -491,6 +495,25 @@ impl Expression {
         }
     }
 
+    pub fn get_by_key_and_loc(&self, key: &str, loc: &Loc) -> Result<Expression, LocError> {
+        self.get_by_key(&key).ok_or_else(|| match self {
+            Expression::Map(map) => loc.error(&format!(
+                "Map does not contain key \"{}\". Available keys: [{}]",
+                key,
+                join(", ", map.borrow().keys().map(|key| format!("\"{}\"", key)).collect())
+            )),
+            _ => loc.error(&format!(
+                "could not look up {} in {}",
+                key,
+                self.type_str()
+            )),
+        })
+    }
+
+    pub fn get_by_key_token(&self, token: &Token) -> Result<Expression, LocError> {
+        self.get_by_key_and_loc(&token.value, &token.loc)
+    }
+
     pub fn set(&self, key: &str, val: Expression) -> bool {
         match self {
             Expression::Map(map) => {
@@ -503,54 +526,54 @@ impl Expression {
 
     pub fn eval<W: Write>(
         &self,
-        output: &Rc<RefCell<W>>,
-        scope: &Rc<Scope>,
+        ctx: &FunContext<W>,
     ) -> Result<Expression, LocError> {
         match self {
             Expression::FuncCall(func_call) => {
                 if func_call.ident.accessors.len() == 1 {
                     let name = func_call.ident.accessors[0].value.clone();
                     match name.as_ref() {
-                        "print" => return fun_print(&func_call, output, scope),
-                        "println" => return fun_println(&func_call, output, scope),
-                        "add" => return fun_add(scope, output, &func_call),
-                        "sub" => return fun_sub(scope, output, &func_call),
-                        "eq" => return fun_eq(scope, output, &*func_call.arg),
-                        "str" => return fun_str(scope, output, &*func_call),
-                        "not" => return fun_not(scope, output, &*func_call),
-                        "lte" => return fun_lte(scope, output, &*func_call),
-                        "lt" => return fun_lt(scope, output, &*func_call),
-                        "gte" => return fun_gte(scope, output, &*func_call),
-                        "or" => return fun_or(&scope, output, &*func_call),
-                        "type" => return fun_type(&scope, output, &func_call),
-                        "etype" => return fun_etype(&*func_call.arg),
-                        "and" => return fun_and(&scope, output, &*func_call),
-                        "modulo" => return fun_modulo(scope, output, &*func_call),
-                        "Map" => return fun_create_map(scope, output, &*func_call.arg),
-                        "lazy" => return fun_lazy(scope, output, &func_call),
+                        "print" => return fun_print(ctx, &func_call),
+                        "println" => return fun_println(ctx, &func_call),
+                        "add" => return fun_add(ctx, &func_call),
+                        "sub" => return fun_sub(ctx, &func_call),
+                        "eq" => return fun_eq(ctx, &func_call),
+                        "str" => return fun_str(ctx, &*func_call),
+                        "not" => return fun_not(ctx, &*func_call),
+                        "lte" => return fun_lte(ctx, &*func_call),
+                        "lt" => return fun_lt(ctx, &*func_call),
+                        "gte" => return fun_gte(ctx, &*func_call),
+                        "or" => return fun_or(ctx, &*func_call),
+                        "type" => return fun_type(ctx, &func_call),
+                        "etype" => return fun_etype(&func_call),
+                        "and" => return fun_and(ctx, &*func_call),
+                        "modulo" => return fun_modulo(ctx, &*func_call),
+                        "Map" => return fun_create_map(),
+                        "lazy" => return fun_lazy(ctx, &func_call),
+                        "in" => return fun_in(ctx, func_call),
                         _ => {}
                     }
                 }
 
-                let expr = call_func_expr(func_call, output, scope);
+                let expr = call_func_expr(func_call, ctx);
                 Ok(expr?.strip_return())
             }
-            Expression::Block(func_call) => call_func_expr(func_call, output, scope),
+            Expression::Block(func_call) => call_func_expr(func_call, ctx),
             Expression::VarDecl(assignment) => {
-                let value = assignment.expr.eval(output, scope)?;
-                scope.assign(assignment.ident.clone(), value.clone());
+                let value = assignment.expr.eval(ctx)?;
+                ctx.scope.assign(assignment.ident.clone(), value.clone());
                 Ok(value)
             }
             Expression::ReAssignment(reassignment) => {
-                let assigned_value = reassignment.expr.eval(output, scope)?;
+                let assigned_value = reassignment.expr.eval(ctx)?;
 
                 if reassignment.ident.accessors.len() == 1 {
                     let token = reassignment.ident.accessors[0].clone();
-                    scope.reassign(&token.loc, token.value, assigned_value.clone())?;
+                    ctx.scope.reassign(&token.loc, token.value, assigned_value.clone())?;
                     return Ok(assigned_value.clone());
                 }
 
-                let mut container = scope
+                let mut container = ctx.scope
                     .get(&reassignment.ident.accessors[0].value)
                     .ok_or_else(|| {
                         reassignment.ident.accessors[0]
@@ -560,11 +583,7 @@ impl Expression {
 
                 for i in 1..(reassignment.ident.accessors.len() - 1) {
                     let token = &reassignment.ident.accessors[i];
-                    container = container.get_by_key(&token.value).ok_or_else(|| {
-                        token
-                            .loc
-                            .error(&format!("Failed to read property '{}'", &token.value))
-                    })?;
+                    container = container.get_by_key_token(&token)?;
                 }
                 let token = reassignment.ident.accessors.last().unwrap();
                 if !container.set(&token.value, assigned_value.clone()) {
@@ -577,7 +596,7 @@ impl Expression {
             Expression::String(string) => Ok(Expression::String(string.clone())),
             Expression::Touple(value) => {
                 if value.len() == 1 {
-                    return Ok(value[0].clone().eval(output, scope)?);
+                    return Ok(value[0].clone().eval(ctx)?);
                 }
                 Ok(Expression::Touple(value.clone()))
             }
@@ -592,27 +611,30 @@ impl Expression {
                 if var.ident == "null" {
                     return Ok(Expression::Null);
                 }
-                if let Some(value) = scope.get(&var.ident) {
+                if let Some(value) = ctx.scope.get(&var.ident) {
                     return Ok(value);
                 }
                 var.not_defined_err()
             }
             Expression::FuncExpr(func_expr) => Ok(Expression::Closure(Box::new(Closure {
                 func_expr: func_expr.clone(),
-                scope: Rc::clone(&scope),
+                scope: Rc::clone(&ctx.scope),
             }))),
             Expression::ForExpr(for_expr) => {
                 let ident = &for_expr.identifier;
-                let start = for_expr.start.as_int(&ident.loc, output, scope)?;
-                let end = for_expr.end.as_int(&ident.loc, output, scope)?;
+                let start = for_expr.start.as_int(&ident.loc, ctx)?;
+                let end = for_expr.end.as_int(&ident.loc, ctx)?;
                 let body = &for_expr.body;
 
                 let mut last = Expression::Null;
 
                 for i in start..end {
-                    let scope = Rc::new(Scope::create(scope));
-                    scope.assign(ident.ident.clone(), Expression::Int(i));
-                    last = eval_expr_list(&body, output, &scope)?;
+                    let child_ctx = FunContext {
+                        scope: Rc::new(Scope::create(&ctx.scope)),
+                        output: Rc::clone(&ctx.output),
+                    };
+                    child_ctx.scope.assign(ident.ident.clone(), Expression::Int(i));
+                    last = eval_expr_list(&body, &child_ctx)?;
                 }
 
                 return Ok(last);
@@ -623,47 +645,37 @@ impl Expression {
 
                 let mut last = Expression::Null;
 
-                while condition.eval(output, scope)?.as_bool()? {
-                    let scope = Rc::new(Scope::create(scope));
-                    last = eval_expr_list(&body, output, &scope)?;
+                while condition.eval(ctx)?.as_bool()? {
+                    let child_ctx = FunContext {
+                        scope: Rc::new(Scope::create(&ctx.scope)),
+                        output: Rc::clone(&ctx.output),
+                    };
+                    last = eval_expr_list(&body, &child_ctx)?;
                 }
 
                 return Ok(last);
             }
             Expression::IfExpr(if_expr) => {
-                let condition = if_expr.condition.eager_eval(output, scope)?.as_bool()?;
+                let condition = if_expr.condition.eager_eval(ctx)?.as_bool()?;
                 if condition {
-                    eval_expr_and_call_returned_block(&if_expr.then_expr, output, scope)
+                    eval_expr_and_call_returned_block(&if_expr.then_expr, ctx)
                 } else if let Some(else_expr) = &if_expr.else_expr {
-                    eval_expr_and_call_returned_block(&else_expr, output, scope)
+                    eval_expr_and_call_returned_block(&else_expr, ctx)
                 } else {
                     Ok(Expression::Null)
                 }
             }
             Expression::Return(inner) => {
-                let inner = inner.eval(output, scope)?;
+                let inner = inner.eval(ctx)?;
                 return Ok(Expression::Return(Box::new(inner)));
             }
             Expression::Bool(value) => Ok(Expression::Bool(value.clone())),
             Expression::Null => Ok(Expression::Null),
-            Expression::List(list) => Ok(Expression::List(list.eval(output, scope)?)),
-            Expression::Access(access) => match access.target.eval(output, scope)? {
-                Expression::Map(map) => {
-                    let result = map
-                        .borrow()
-                        .get(&access.key)
-                        .ok_or_else(|| access.loc.error("Not in map"))?
-                        .clone();
-                    Ok(result)
-                }
-                Expression::List(_) => {
-                    todo!()
-                }
-                _ => Err(access.loc.error("Not able to call method on value")),
+            Expression::List(list) => Ok(Expression::List(list.eval(ctx)?)),
+            Expression::Access(access) => {
+                access.target.eval(ctx)?.get_by_key_and_loc(&access.key, &access.loc)
             },
-            Expression::ImportExpr(import_expr) => {
-                import_expr.eval(output, scope)
-            }
+            Expression::ImportExpr(import_expr) => import_expr.eval(ctx),
             _ => {
                 todo!("Failed to eval expression {:?}", self);
             }
@@ -673,8 +685,7 @@ impl Expression {
     pub fn as_string<W: Write>(
         &self,
         loc: &Loc,
-        output: &Rc<RefCell<W>>,
-        scope: &Rc<Scope>,
+        ctx: &FunContext<W>,
     ) -> Result<String, LocError> {
         match self {
             Expression::String(string) => Ok(string.clone()),
@@ -682,9 +693,9 @@ impl Expression {
             Expression::Touple(value) => {
                 let mut result = String::new();
                 for expr in value {
-                    let item = expr.eval(output, scope);
+                    let item = expr.eval(ctx);
                     match item {
-                        Ok(item) => match item.as_string(loc, output, scope) {
+                        Ok(item) => match item.as_string(loc, ctx) {
                             Ok(res) => {
                                 result.push_str(&res);
                             }
@@ -697,20 +708,20 @@ impl Expression {
             }
             Expression::Bool(value) => Ok(value.to_string()),
             Expression::Lazy(lazy_expr) => {
-                lazy_expr.eval(output, scope)?.as_string(loc, output, scope)
+                lazy_expr.eval(ctx)?.as_string(loc, ctx)
             }
             Expression::Null => Ok(String::from("null")),
-            Expression::Return(expression) => expression.as_string(loc, output, scope),
-            Expression::List(list) => list.as_string(output, scope),
+            Expression::Return(expression) => expression.as_string(loc, ctx),
+            Expression::List(list) => list.as_string(ctx),
             // TODO: Split Expression and SimpleExpression
             Expression::FuncCall(_func_call) => todo!(),
             Expression::Access(_) => todo!(),
             Expression::VarDecl(_var_decl) => todo!(),
             Expression::ReAssignment(_re_assignment) => todo!(),
-            Expression::Variable(var) => scope
+            Expression::Variable(var) => ctx.scope
                 .get(&var.ident)
                 .ok_or(var.loc.error("Could not resolve variable"))?
-                .as_string(&var.loc, output, scope),
+                .as_string(&var.loc, ctx),
             Expression::FuncExpr(_func_expr) => todo!(),
             Expression::Closure(_closure) => todo!(),
             Expression::IfExpr(_if_expr) => todo!(),
@@ -844,7 +855,12 @@ impl Scope {
         expr
     }
 
-    pub fn reassign(&self, loc: &Loc, ident: String, expr: Expression) -> Result<Expression, LocError> {
+    pub fn reassign(
+        &self,
+        loc: &Loc,
+        ident: String,
+        expr: Expression,
+    ) -> Result<Expression, LocError> {
         let val = {
             let values = self.values.borrow();
             values.get(&ident).cloned()

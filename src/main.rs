@@ -1,4 +1,5 @@
 pub mod builtins;
+pub mod context;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;
@@ -10,7 +11,6 @@ use resolve_path::PathResolveExt;
 use std::cell::RefCell;
 use std::env;
 use std::fs;
-use std::os::unix::process;
 use std::process::exit;
 use std::rc::Rc;
 //use std::time::Instant;
@@ -928,6 +928,17 @@ pub mod tests {
         "#;
 
         assert_eq!(test_eval(source), "4");
+    }
+
+    #[test]
+    fn it_can_import_multiple_symbols() {
+        let source = r#"
+            from "./lib/exporter.fun" import foo, bar
+            println foo
+            println bar
+        "#;
+
+        assert_eq!(test_eval(source), "123\n456\n");
     }
 
     #[test]

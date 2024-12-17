@@ -1,10 +1,9 @@
 use std::{cell::RefCell, collections::HashMap, io::Write, rc::Rc};
 
-use crate::{Expression, FuncCall, LazyExpression, LocError, Scope};
+use crate::{context::FunContext, Expression, FuncCall, LazyExpression, LocError, Scope};
 
 pub fn fun_add<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let args = func_call.arg.as_vec();
@@ -12,41 +11,39 @@ pub fn fun_add<W: Write>(
     let mut sum = 0i64;
 
     for arg in args {
-        sum += arg.as_int(&func_call.ident.loc(), output, scope)?;
+        sum += arg.as_int(&func_call.ident.loc(), ctx)?;
     }
 
     Ok(Expression::Int(sum))
 }
 
 pub fn fun_sub<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    let args = func_call.arg.eager_eval(output, scope)?.as_vec();
+    let args = func_call.arg.eager_eval(ctx)?.as_vec();
 
     let mut sum = args
         .get(0)
         .ok_or(func_call.ident.error("At least one argument is required"))?
-        .as_int(&func_call.ident.loc(), output, scope)?;
+        .as_int(&func_call.ident.loc(), ctx)?;
 
     for i in 1..args.len() {
-        sum -= args[i].as_int(&func_call.ident.loc(), output, scope)?;
+        sum -= args[i].as_int(&func_call.ident.loc(), ctx)?;
     }
 
     Ok(Expression::Int(sum))
 }
 
 pub fn fun_eq<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
-    expr: &Expression,
+    ctx: &FunContext<W>,
+    func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    let values = expr.eval(output, scope)?.as_vec();
+    let values = func_call.arg.eval(ctx)?.as_vec();
 
     for i in 1..values.len() {
-        let a = values[i].eager_eval(output, scope)?;
-        let b = values[i - 1].eager_eval(output, scope)?;
+        let a = values[i].eager_eval(ctx)?;
+        let b = values[i - 1].eager_eval(ctx)?;
         if a != b {
             return Ok(Expression::Bool(false));
         }
@@ -56,50 +53,47 @@ pub fn fun_eq<W: Write>(
 }
 
 pub fn fun_str<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     Ok(Expression::String(
         func_call
             .arg
-            .eval(output, scope)?
-            .eval(output, scope)?
-            .as_string(&func_call.ident.loc(), output, scope)?,
+            .eval(ctx)?
+            .eval(ctx)?
+            .as_string(&func_call.ident.loc(), ctx)?,
     ))
 }
 
 pub fn fun_not<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     Ok(Expression::Bool(
         !func_call
             .arg
-            .eval(output, scope)?
-            .eval(output, scope)?
+            .eval(ctx)?
+            .eval(ctx)?
             .as_bool()?,
     ))
 }
 
 pub fn fun_lte<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    let values = func_call.arg.eval(output, scope)?.as_vec();
+    let values = func_call.arg.eval(ctx)?.as_vec();
 
     if values.len() > 0 {
         let mut first =
             values[0]
-                .eval(output, scope)?
-                .as_int(&func_call.ident.loc(), output, scope)?;
+                .eval(ctx)?
+                .as_int(&func_call.ident.loc(), ctx)?;
         for i in 1..values.len() {
             let second =
                 values[i]
-                    .eval(output, scope)?
-                    .as_int(&func_call.ident.loc(), output, scope)?;
+                    .eval(ctx)?
+                    .as_int(&func_call.ident.loc(), ctx)?;
             if !(first <= second) {
                 return Ok(Expression::Bool(false));
             }
@@ -111,22 +105,21 @@ pub fn fun_lte<W: Write>(
 }
 
 pub fn fun_lt<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    let values = func_call.arg.eval(output, scope)?.as_vec();
+    let values = func_call.arg.eval(ctx)?.as_vec();
 
     if values.len() > 0 {
         let mut first =
             values[0]
-                .eval(output, scope)?
-                .as_int(&func_call.ident.loc(), output, scope)?;
+                .eval(ctx)?
+                .as_int(&func_call.ident.loc(), ctx)?;
         for i in 1..values.len() {
             let second =
                 values[i]
-                    .eval(output, scope)?
-                    .as_int(&func_call.ident.loc(), output, scope)?;
+                    .eval(ctx)?
+                    .as_int(&func_call.ident.loc(), ctx)?;
             if !(first < second) {
                 return Ok(Expression::Bool(false));
             }
@@ -138,22 +131,21 @@ pub fn fun_lt<W: Write>(
 }
 
 pub fn fun_gte<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    let values = func_call.arg.eval(output, scope)?.as_vec();
+    let values = func_call.arg.eval(ctx)?.as_vec();
 
     if values.len() > 0 {
         let mut first =
             values[0]
-                .eval(output, scope)?
-                .as_int(&func_call.ident.loc(), output, scope)?;
+                .eval(ctx)?
+                .as_int(&func_call.ident.loc(), ctx)?;
         for i in 1..values.len() {
             let second =
                 values[i]
-                    .eval(output, scope)?
-                    .as_int(&func_call.ident.loc(), output, scope)?;
+                    .eval(ctx)?
+                    .as_int(&func_call.ident.loc(), ctx)?;
             if !(first >= second) {
                 return Ok(Expression::Bool(false));
             }
@@ -164,60 +156,52 @@ pub fn fun_gte<W: Write>(
     Ok(Expression::Bool(true))
 }
 
-pub fn fun_create_map<W: Write>(
-    _scope: &Rc<Scope>,
-    _output: &Rc<RefCell<W>>,
-    _expr: &Expression,
-) -> Result<Expression, LocError> {
+pub fn fun_create_map() -> Result<Expression, LocError> {
     Ok(Expression::Map(Rc::new(RefCell::new(HashMap::new()))))
 }
 
 pub fn fun_lazy<W: Write>(
-    scope: &Rc<Scope>,
-    _output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     Ok(Expression::Lazy(Box::new(LazyExpression {
         expr: *func_call.arg.clone(),
-        scope: Rc::clone(scope),
+        scope: Rc::clone(&ctx.scope),
     })))
 }
 
 pub fn fun_print<W: Write>(
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
-    output: &Rc<RefCell<W>>,
-    scope: &Rc<Scope>,
 ) -> Result<Expression, LocError> {
-    let value = func_call.arg.eval(output, scope)?;
-    let result = value.as_string(&func_call.ident.loc(), output, scope)?;
-    write!(output.borrow_mut(), "{}", &result).unwrap();
+    let value = func_call.arg.eval(ctx)?;
+    let result = value.as_string(&func_call.ident.loc(), ctx)?;
+    write!(ctx.output.borrow_mut(), "{}", &result).unwrap();
     Ok(Expression::Null)
 }
 
 pub fn fun_println<W: Write>(
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
-    output: &Rc<RefCell<W>>,
-    scope: &Rc<Scope>,
 ) -> Result<Expression, LocError> {
-    let value = func_call.arg.eval(output, scope)?;
-    let result = value.as_string(&func_call.ident.loc(), output, scope)?;
-    writeln!(output.borrow_mut(), "{}", &result).unwrap();
+    let value = func_call.arg.eval(ctx)?;
+    let result = value.as_string(&func_call.ident.loc(), ctx)?;
+    writeln!(ctx.output.borrow_mut(), "{}", &result).unwrap();
     Ok(Expression::Null)
 }
 
 pub fn fun_or<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    let expressions = func_call.arg.eval(output, scope)?.as_vec();
+    let expressions = func_call.arg.eval(ctx)?.as_vec();
 
     if expressions.len() < 1 {
         return Err(func_call.ident.error("or requires at least one argument"));
     }
 
     for expression in expressions {
-        let value = expression.eval(output, scope)?;
+        let value = expression.eval(ctx)?;
 
         if value.as_bool()? {
             return Ok(Expression::Bool(true));
@@ -228,20 +212,19 @@ pub fn fun_or<W: Write>(
 }
 
 pub fn fun_and<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     println!("FUN OR: {}", func_call.arg.debug_str());
 
-    let expressions = func_call.arg.eval(output, scope)?.as_vec();
+    let expressions = func_call.arg.eval(ctx)?.as_vec();
 
     if expressions.len() < 1 {
         return Err(func_call.ident.error("or requires at least one argument"));
     }
 
     for expression in expressions {
-        let value = expression.eval(output, scope)?;
+        let value = expression.eval(ctx)?;
 
         println!("value: {}", value.debug_str());
 
@@ -254,39 +237,37 @@ pub fn fun_and<W: Write>(
 }
 
 pub fn fun_modulo<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
     let arg = func_call.arg.clone();
 
-    let expr = arg.eval(output, scope)?;
+    let expr = arg.eval(ctx)?;
 
     let (first, second) = expr
         .require_two_touple()
         .ok_or(func_call.ident.error("Expected two arguments"))?;
 
     let first = first
-        .eval(output, scope)?
-        .as_int(&func_call.ident.loc(), output, scope)?;
+        .eval(ctx)?
+        .as_int(&func_call.ident.loc(), ctx)?;
     let second = second
-        .eval(output, scope)?
-        .as_int(&func_call.ident.loc(), output, scope)?;
+        .eval(ctx)?
+        .as_int(&func_call.ident.loc(), ctx)?;
 
     return Ok(Expression::Int(first % second));
 }
 
 pub fn fun_type<W: Write>(
-    scope: &Rc<Scope>,
-    output: &Rc<RefCell<W>>,
+    ctx: &FunContext<W>,
     func_call: &FuncCall,
 ) -> Result<Expression, LocError> {
-    let expr = func_call.arg.eval(output, scope)?;
+    let expr = func_call.arg.eval(ctx)?;
     Ok(Expression::String(expr.type_str().to_string()))
 }
 
-pub fn fun_etype(expr: &Expression) -> Result<Expression, LocError> {
-    Ok(Expression::String(expr.type_str().to_string()))
+pub fn fun_etype(func_call: &FuncCall) -> Result<Expression, LocError> {
+    Ok(Expression::String(func_call.arg.type_str().to_string()))
 }
 
 pub fn fun_core_env() -> Expression {
@@ -302,7 +283,27 @@ pub fn fun_core_env() -> Expression {
     Expression::Map(Rc::new(RefCell::new(env_map)))
 }
 
+pub fn fun_in<W: Write>(ctx: &FunContext<W>, func_call: &FuncCall) -> Result<Expression, LocError> {
+    let args = func_call.arg.as_vec();
+
+    match args.len() {
+        2 => {
+            func_call.arg.eval(ctx)
+        },
+        _ => {
+            Err(func_call.ident.loc().error("'in' requires two arguments"))
+        },
+    }
+}
+
 pub fn fun_core_http() -> Expression {
     // TODO
     Expression::Null
+}
+
+pub fn fun_core_module() -> Scope {
+    let scope = Scope::new();
+    scope.assign("env".to_string(), fun_core_env());
+    scope.assign("http".to_string(), fun_core_http());
+    scope
 }
