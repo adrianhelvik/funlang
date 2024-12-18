@@ -1,3 +1,9 @@
+#[derive(PartialEq, Eq)]
+pub enum Optionality {
+    Optional,
+    Required,
+}
+
 pub fn join(sep: &str, values: Vec<String>) -> String {
     if let Some(s) = values.get(0) {
         let mut result = s.to_string();
@@ -10,4 +16,3 @@ pub fn join(sep: &str, values: Vec<String>) -> String {
         String::new()
     }
 }
-

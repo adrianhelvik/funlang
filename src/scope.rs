@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use crate::{Expression, Loc, LocError};
+use crate::{interpreter::InterpreterResult, setup_builtins::lookup_global_builtins, Expression, LocError, LocExpr, Variable};
 
 #[derive(Debug, PartialEq)]
 pub struct Scope {
@@ -23,28 +23,27 @@ impl Scope {
         }
     }
 
-    pub fn assign(&self, ident: String, expr: Expression) -> Expression {
+    pub fn assign(&self, ident: String, expr: LocExpr) -> LocExpr {
         self.values
             .borrow_mut()
-            .insert(ident.to_string(), expr.clone());
+            .insert(ident.to_string(), expr.expr.clone());
         expr
     }
 
     pub fn reassign(
         &self,
-        loc: &Loc,
-        ident: String,
-        expr: Expression,
-    ) -> Result<Expression, LocError> {
+        var: &Variable,
+        expr: LocExpr,
+    ) -> Result<LocExpr, LocError> {
         let val = {
             let values = self.values.borrow();
-            values.get(&ident).cloned()
+            values.get(&var.ident).cloned()
         };
         match val {
             Some(_) => {
                 self.values
                     .borrow_mut()
-                    .insert(ident.to_string(), expr.clone());
+                    .insert(var.ident.to_string(), expr.expr.clone());
                 Ok(expr)
             }
             None => {
@@ -52,13 +51,13 @@ impl Scope {
                     .parent
                     .as_ref()
                     .ok_or_else(|| {
-                        loc.error(&format!(
+                        var.loc.error(&format!(
                             "Attempted to reassign undeclared variable '{}'",
-                            ident.clone()
+                            var.ident.clone()
                         ))
                     })?
                     .borrow();
-                parent.reassign(&loc, ident, expr)
+                parent.reassign(var, expr)
             }
         }
     }
@@ -67,12 +66,24 @@ impl Scope {
         self.values.borrow().contains_key(&ident)
     }
 
-    pub fn get(&self, ident: &str) -> Option<Expression> {
-        match self.values.borrow().get(ident) {
-            Some(expr) => Some(expr.clone()),
+    pub fn get(&self, var: &Variable) -> InterpreterResult {
+        if let Some(expr) = lookup_global_builtins(var) {
+            return Ok(expr);
+        } else {
+            self.get_non_global(var)
+        }
+    }
+
+    fn get_non_global(&self, var: &Variable) -> InterpreterResult {
+        match self.values.borrow().get(&var.ident) {
+            Some(expr) => Ok(var.loc.wrap(expr.clone())),
             None => {
-                let parent = self.parent.as_ref()?.borrow();
-                parent.get(ident).clone()
+                if let Some(parent) = self.parent.as_ref() {
+                    let parent = parent.borrow();
+                    parent.get(var).clone()
+                } else {
+                    Err(var.loc.error(&format!("Attempted to access undefined variable '{}'", var.ident)))
+                }
             }
         }
     }

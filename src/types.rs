@@ -8,26 +8,39 @@ use std::rc::Rc;
 use crate::context::FunCtx;
 use crate::interpreter::eval_expr_and_call_returned_block;
 use crate::scope::Scope;
+use crate::setup_builtins::BuiltinName;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
-    pub expressions: Vec<Expression>,
+    pub expressions: Vec<LocExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncCall {
-    pub ident: Identifier,
-    pub arg: Box<Expression>,
-    pub this: Box<Expression>,
+    pub target: Box<LocExpr>,
+    pub arg: Box<LocExpr>,
+    pub this: Box<LocExpr>,
 }
 
 impl FuncCall {
-    pub fn with_this(&self, this: Expression) -> FuncCall {
+    pub fn with_this(&self, this: LocExpr) -> FuncCall {
         return FuncCall {
-            ident: self.ident.clone(),
+            target: self.target.clone(),
             arg: self.arg.clone(),
             this: Box::new(this),
         }
+    }
+
+    pub fn loc(&self) -> &Loc {
+        &self.arg.loc
+    }
+
+    pub fn expr(&self, expr: Expression) -> LocExpr {
+        self.loc().wrap(expr)
+    }
+
+    pub fn error(&self, message: &str) -> LocError {
+        self.loc().error(message)
     }
 }
 
@@ -45,7 +58,7 @@ impl Variable {
         }
     }
 
-    pub fn not_defined_err(&self) -> Result<Expression, LocError> {
+    pub fn not_defined_err(&self) -> Result<LocExpr, LocError> {
         Err(LocError {
             loc: self.loc.clone(),
             message: format!("Variable '{}' is not defined", self.ident),
@@ -55,6 +68,30 @@ impl Variable {
     pub fn error(&self, message: &str) -> LocError {
         self.loc.error(message)
     }
+
+    pub fn expr(self) -> LocExpr {
+        let loc = self.loc.clone();
+        loc.wrap(Expression::Variable(self))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocExpr {
+    pub loc: Loc,
+    pub expr: Expression,
+}
+
+impl LocExpr {
+    pub fn new(loc: Loc, expr: Expression) -> LocExpr {
+        LocExpr {
+            loc,
+            expr,
+        }
+    }
+
+    pub fn boxed(self) -> Box<LocExpr> {
+        Box::new(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,13 +99,13 @@ pub enum Expression {
     String(String),
     Int(i64),
     FuncCall(FuncCall),
-    Touple(Vec<Expression>),
+    Touple(Vec<LocExpr>),
     VarDecl(Box<VarDecl>),
     ReAssignment(Box<ReAssignment>),
     Variable(Variable),
     FuncExpr(FuncExpr),
     Null,
-    Return(Box<Expression>),
+    Return(Box<LocExpr>),
     Closure(Box<Closure>),
     IfExpr(Box<IfExpr>),
     Bool(bool),
@@ -80,31 +117,30 @@ pub enum Expression {
     Access(Access),
     ImportExpr(ImportExpr),
     Lazy(Box<LazyExpression>),
-    BuiltinFuncCall(Builtin),
+    BuiltinFunc(BuiltinFunc),
+}
+impl Expression {
+    pub fn with_loc(&self, loc: &Loc) -> LocExpr {
+        loc.wrap(self.clone())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RangeLiteral {
-    pub start: Expression,
-    pub end: Expression
+    pub start: LocExpr,
+    pub end: LocExpr
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum BuiltinName {
-    ListPush,
-    ListLen,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Builtin {
+pub struct BuiltinFunc {
     pub loc: Loc,
     pub name: BuiltinName,
-    pub this: Box<Expression>,
+    pub this: Box<LocExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LazyExpression {
-    pub expr: Expression,
+    pub expr: LocExpr,
     pub scope: Rc<Scope>,
 }
 
@@ -112,7 +148,7 @@ impl LazyExpression {
     pub fn eval<W: Write>(
         &self,
         ctx: &FunCtx<W>
-    ) -> Result<Expression, LocError> {
+    ) -> Result<LocExpr, LocError> {
         eval_expr_and_call_returned_block(&self.expr, ctx)
     }
 }
@@ -120,42 +156,42 @@ impl LazyExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportExpr {
     pub loc: Loc,
-    pub source: String,
-    pub symbols: Vec<Token>,
+    pub path: String,
+    pub symbols: Vec<Variable>,
 }
 
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Access {
     pub loc: Loc,
-    pub target: Box<Expression>,
+    pub target: Box<LocExpr>,
     pub key: String,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct List {
-    pub items: Rc<RefCell<Vec<Expression>>>,
+    pub items: Rc<RefCell<Vec<LocExpr>>>,
     pub loc: Loc,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IfExpr {
-    pub condition: Expression,
-    pub then_expr: Expression,
-    pub else_expr: Option<Expression>,
+    pub condition: LocExpr,
+    pub then_expr: LocExpr,
+    pub else_expr: Option<LocExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForExpr {
     pub identifier: Variable,
     pub range: Box<RangeLiteral>,
-    pub body: Vec<Expression>,
+    pub body: Vec<LocExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhileExpr {
-    pub condition: Box<Expression>,
-    pub body: Vec<Expression>,
+    pub condition: Box<LocExpr>,
+    pub body: Vec<LocExpr>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,14 +210,19 @@ impl PartialEq for Closure {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarDecl {
     pub ident: String,
-    pub expr: Expression,
-    pub loc: Loc,
+    pub expr: LocExpr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReAssignment {
-    pub ident: Identifier,
-    pub expr: Expression,
+    pub target: VarOrAccess,
+    pub expr: LocExpr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum VarOrAccess {
+    Access(Access),
+    Variable(Variable),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,7 +233,7 @@ pub struct Identifier {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncExpr {
     pub args: Vec<String>,
-    pub expressions: Vec<Expression>,
+    pub expressions: Vec<LocExpr>,
 }
 
 
@@ -212,6 +253,45 @@ impl Loc {
             loc: self.clone(),
             message: message.to_string(),
         }
+    }
+
+    pub fn wrap(&self, expr: Expression) -> LocExpr {
+        LocExpr {
+            loc: self.clone(),
+            expr,
+        }
+    }
+
+    pub fn touple(&self, touple: Vec<LocExpr>) -> LocExpr {
+        self.wrap(Expression::Touple(touple))
+    }
+
+    pub fn string(&self, string: String) -> LocExpr {
+        self.wrap(Expression::String(string))
+    }
+
+    pub fn str(&self, string: &str) -> LocExpr {
+        self.wrap(Expression::String(string.to_string()))
+    }
+
+    pub fn null(&self) -> LocExpr {
+        self.wrap(Expression::Null)
+    }
+
+    pub fn func_call(&self, func_call: FuncCall) -> LocExpr {
+        self.wrap(Expression::FuncCall(func_call))
+    }
+
+    pub fn var_decl(&self, var_decl: VarDecl) -> LocExpr {
+        self.wrap(Expression::VarDecl(Box::new(var_decl)))
+    }
+
+    pub fn int(&self, int: i64) -> LocExpr {
+        self.wrap(Expression::Int(int))
+    }
+
+    pub fn builtin_func(&self, builtin_func: BuiltinFunc) -> LocExpr {
+        self.wrap(Expression::BuiltinFunc(builtin_func))
     }
 }
 
@@ -233,7 +313,7 @@ impl Token {
         Token { value, loc }
     }
 
-    pub fn to_variable(&self) -> Variable {
+    pub fn var(&self) -> Variable {
         Variable {
             ident: self.value.clone(),
             loc: self.loc.clone(),

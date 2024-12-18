@@ -1,4 +1,6 @@
+pub mod setup_builtins;
 pub mod builtins;
+pub mod parse_macros;
 pub mod context;
 pub mod interpreter;
 pub mod scope;
@@ -61,7 +63,7 @@ pub fn test_eval(source: &str) -> String {
             let output = output.borrow();
             String::from_utf8(output.to_vec()).unwrap()
         }
-        Err(err) => err.message,
+        Err(err) => SyntaxError::generate_plain(err, source.to_string()).message,
     }
 }
 
@@ -1229,8 +1231,8 @@ pub mod tests {
                 let my_map = Map()
                 my_map.hello = "world"
 
-                println in(my_map, "hello")
-                println in(my_map, "there")
+                println Map.has(my_map, "hello")
+                println Map.has(my_map, "there")
             "#,
             vec!["true", "false"]
         );
@@ -1257,6 +1259,40 @@ pub mod tests {
                 println func()
             "#,
             vec!["1", "2", "3", "4", "5", "early"]
+        );
+    }
+
+    #[test]
+    fn you_can_call_deeply_nested_methods() {
+        assert_lines_equal!(
+            r#"
+                let obj = Map()
+                obj.foo = Map()
+                obj.foo.bar = Map()
+                obj.foo.bar.baz = Map()
+                obj.foo.bar.baz.bax = () { "Hey" }
+
+                println obj.foo.bar.baz.bax()
+                println(obj.foo.bar.baz.bax())
+            "#,
+            vec!["Hey", "Hey"]
+        );
+    }
+
+    #[test]
+    fn you_can_access_deeply_nested_properties() {
+        assert_lines_equal!(
+            r#"
+                let obj = Map()
+                obj.foo = Map()
+                obj.foo.bar = Map()
+                obj.foo.bar.baz = Map()
+                obj.foo.bar.baz.bax = "Hey"
+
+                println obj.foo.bar.baz.bax
+                println(obj.foo.bar.baz.bax)
+            "#,
+            vec!["Hey", "Hey"]
         );
     }
 }
