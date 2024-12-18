@@ -67,6 +67,24 @@ pub fn fun_sub<W: Write>(
     Ok(func_call.target.loc.wrap(Expression::Int(sum)))
 }
 
+pub fn fun_mul<W: Write>(
+    ctx: &FunCtx<W>,
+    func_call: &FuncCall,
+) -> InterpreterResult {
+    let args = func_call.arg.eager_eval(ctx)?.as_vec();
+
+    let mut sum = args
+        .get(0)
+        .ok_or(func_call.target.loc.error("At least one argument is required"))?
+        .as_int(ctx)?;
+
+    for i in 1..args.len() {
+        sum *= args[i].as_int(ctx)?;
+    }
+
+    Ok(func_call.target.loc.wrap(Expression::Int(sum)))
+}
+
 pub fn fun_eq<W: Write>(
     ctx: &FunCtx<W>,
     func_call: &FuncCall,

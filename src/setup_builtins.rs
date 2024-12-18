@@ -27,6 +27,7 @@ pub enum BuiltinName {
     Lazy,
     Str,
     Sub,
+    Mul,
 }
 
 pub fn lookup_global_builtins(var: &Variable) -> Option<LocExpr> {
@@ -51,6 +52,7 @@ pub fn lookup_global_builtins(var: &Variable) -> Option<LocExpr> {
         "gte" => def(B::Gte),
         "and" => def(B::And),
         "add" => def(B::Add),
+        "+" => def(B::Add),
         "type" => def(B::Type),
         "Map" => def(B::Map),
         "or" => def(B::Or),
@@ -58,6 +60,9 @@ pub fn lookup_global_builtins(var: &Variable) -> Option<LocExpr> {
         "lazy" => def(B::Lazy),
         "str" => def(B::Str),
         "sub" => def(B::Sub),
+        "-" => def(B::Sub),
+        "mul" => def(B::Mul),
+        "*" => def(B::Mul),
         _ => return None,
     })
 }
@@ -85,6 +90,7 @@ impl BuiltinFunc {
             B::Lazy => "lazy",
             B::Str => "str",
             B::Sub => "sub",
+            B::Mul => "*",
         }
         .to_string()
     }
@@ -114,6 +120,7 @@ impl BuiltinFunc {
             B::Lazy => fun_lazy,
             B::Str => fun_str,
             B::Sub => fun_sub,
+            B::Mul => fun_mul,
         })
     }
 }

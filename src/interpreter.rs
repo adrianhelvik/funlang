@@ -111,11 +111,12 @@ pub fn call_func_expr<W: Write>(func_call: &FuncCall, ctx: &FunCtx<W>) -> Interp
         ),
         Expression::FuncExpr(func_expr) => call_func(&func_expr, &func_call, ctx, ctx),
         Expression::Map(map) => call_map(&map, func_call, ctx),
+        Expression::List(list) => call_list(&list, func_call, ctx),
         Expression::BuiltinFunc(builtin) => builtin.call(ctx, func_call),
         _ => Err(func_call.target.loc.error(&format!(
             "Expression of type '{}' is not callable. (value = {})",
             func_call.target.type_str(),
-            func_call.target.debug_str()
+            func_call.target.eval(ctx)?.debug_str()
         ))),
     }
 }
@@ -144,9 +145,23 @@ fn call_map<W: Write>(
             map.borrow_mut().insert(key, val.expr.clone());
             Ok(val)
         }
-        _ => {
-            panic!("Called map with a number of arguments not in [1, 2]");
-        }
+        _ => Err(func_call
+            .loc()
+            .error("Called map with a number of arguments not in [1, 2]")),
+    }
+}
+
+fn call_list<W: Write>(list: &List, func_call: &FuncCall, ctx: &FunCtx<W>) -> InterpreterResult {
+    let index = func_call.arg.as_int(ctx)?;
+    let real_list = list.items.borrow();
+
+    match real_list.get(index as usize) {
+        Some(item) => Ok((*item).clone()),
+        None => Err(func_call.loc().error(&format!(
+            "Failed to look up index {} of list of length {}",
+            index,
+            real_list.len()
+        ))),
     }
 }
 
@@ -484,19 +499,17 @@ impl LocExpr {
                 ctx.scope.assign(assignment.ident.clone(), value.clone());
                 Ok(value)
             }
-            Expression::ReAssignment(reassignment) => {
-                match &reassignment.target {
-                    VarOrAccess::Access(access) => {
-                        let target = access.target.eval(ctx)?;
-                        let assigned_value = reassignment.expr.eval(ctx)?;
-                        target.set(&access.key, assigned_value.expr.clone())?;
-                        Ok(assigned_value)
-                    }
-                    VarOrAccess::Variable(var) => {
-                        ctx.scope.reassign(&var, reassignment.expr.eval(ctx)?)
-                    }
+            Expression::ReAssignment(reassignment) => match &reassignment.target {
+                VarOrAccess::Access(access) => {
+                    let target = access.target.eval(ctx)?;
+                    let assigned_value = reassignment.expr.eval(ctx)?;
+                    target.set(&access.key, assigned_value.expr.clone())?;
+                    Ok(assigned_value)
                 }
-            }
+                VarOrAccess::Variable(var) => {
+                    ctx.scope.reassign(&var, reassignment.expr.eval(ctx)?)
+                }
+            },
             Expression::String(string) => Ok(self.loc.wrap(Expression::String(string.clone()))),
             Expression::Touple(value) => {
                 if value.len() == 1 {
@@ -630,7 +643,7 @@ impl LocExpr {
             Expression::ForExpr(_) => todo!(),
             Expression::WhileExpr(_) => todo!(),
             Expression::ImportExpr(_) => todo!(),
-            Expression::BuiltinFunc(_) => todo!(),
+            Expression::BuiltinFunc(builtin_func) => Ok(format!("builtin:{}", builtin_func.as_string())),
         }
     }
 

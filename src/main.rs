@@ -1295,4 +1295,16 @@ pub mod tests {
             vec!["Hey", "Hey"]
         );
     }
+
+    #[test]
+    fn you_can_multiply_numbers() {
+        assert_lines_equal!(
+            r#"
+                let n = *(2, 3)
+
+                print n
+            "#,
+            vec!["6"]
+        );
+    }
 }
