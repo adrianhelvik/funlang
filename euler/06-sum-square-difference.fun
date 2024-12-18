@@ -19,7 +19,7 @@ let number_list = (n) {
 let sum = (list) {
     let sum = 0
     for i in 0..list.len() {
-        sum = +(sum, list(i))
+        sum = +(sum, list i)
     }
     sum
 }
@@ -27,7 +27,7 @@ let sum = (list) {
 let squared_sum = (n) {
     let sum = 0
     for i in 1..+(n, 1) {
-        sum = +(sum, square(i))
+        sum = +(sum, square i)
     }
     sum
 }
