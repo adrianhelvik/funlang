@@ -11,7 +11,7 @@ let square = (n) {
 let number_list = (n) {
     let list = []
     for i in 0..n {
-        list.push(add(i, 1))
+        list.push(+(i, 1))
     }
     list
 }
@@ -19,15 +19,15 @@ let number_list = (n) {
 let sum = (list) {
     let sum = 0
     for i in 0..list.len() {
-        sum = add(sum, list(i))
+        sum = +(sum, list(i))
     }
     sum
 }
 
 let squared_sum = (n) {
     let sum = 0
-    for i in 1..add(n, 1) {
-        sum = add(sum, square(i))
+    for i in 1..+(n, 1) {
+        sum = +(sum, square(i))
     }
     sum
 }
