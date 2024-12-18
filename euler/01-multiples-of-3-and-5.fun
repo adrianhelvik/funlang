@@ -12,4 +12,4 @@ for i in 0..1000 {
     }
 }
 
-println("sum: ", sum)
+println "sum: ", sum

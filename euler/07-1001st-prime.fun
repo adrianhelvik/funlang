@@ -16,4 +16,4 @@ from "./sieve.fun" import sieve
 
 let primes = sieve 120000
 
-println primes(10000)
+println primes 10000

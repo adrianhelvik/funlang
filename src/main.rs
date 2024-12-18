@@ -1307,4 +1307,29 @@ pub mod tests {
             vec!["6"]
         );
     }
+
+    #[test]
+    fn you_can_specify_touples_without_parens_aka_simple_touples() {
+        assert_lines_equal!(
+            r#"
+                let foo = "hey"
+                print "a", "b", "c", 123, foo
+            "#,
+            vec!["abc123hey"]
+        );
+    }
+
+    #[test]
+    fn you_can_call_functions_in_simple_touples() {
+        assert_lines_equal!(
+            r#"
+                let foo = "hey"
+                let b = () {
+                    "b"
+                }
+                print "a", b(), "c", 123, foo
+            "#,
+            vec!["abc123hey"]
+        );
+    }
 }

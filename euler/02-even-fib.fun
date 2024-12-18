@@ -1,30 +1,31 @@
-println""
-println"--------------------------------"
-println"Euler 02: Even Fibonacci numbers"
-println"--------------------------------"
-println""
+println ""
+println "--------------------------------"
+println "Euler 02: Even Fibonacci numbers"
+println "--------------------------------"
+println ""
 
 let sum = 0
 
 let cached = (func) {
     let cache = Map()
-    ret (arg) {
-        let value = cache(str(arg))
+
+    (n) {
+        let value = cache(n)
         if not eq(value, null) {
-            ret cache(str(arg))
+            ret cache(n)
         }
-        let value = func(arg)
-        cache(str(arg), value)
+        let value = func(n)
+        cache(n, value)
         ret value
     }
 }
 
 let fib = cached (n) {
     if lte(n, 1) {
-        ret 1
+        1
+    } else {
+        add(fib(-(n, 1)), fib(-(n, 2)))
     }
-
-    ret add(fib(sub(n, 1)), fib(sub(n, 2)))
 }
 
 let sum = 0
@@ -39,5 +40,5 @@ while lt(value, 4000000) {
     }
 }
 
-println("Sum:      ", sum)
-println("Expected: ", 4613732)
+println "Sum:      ", sum
+println "Expected: ", 4613732

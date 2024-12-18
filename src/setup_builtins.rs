@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use crate::context::FunCtx;
-use crate::{builtins::*, FuncCall, LocError};
+use crate::{builtins::*, FuncCall};
 use crate::{interpreter::InterpreterResult, BuiltinFunc, LocExpr, Variable};
 
 pub type BuiltinFn<W> = fn(&FunCtx<W>, &FuncCall) -> InterpreterResult;

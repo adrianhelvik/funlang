@@ -6,6 +6,20 @@ type ParseError = Option<LocError>;
 type ParseResult<T> = Result<(T, State), ParseError>;
 type ExprRes = ParseResult<LocExpr>;
 
+fn parse_simple_touple_arg(state: &State) -> ExprRes {
+    parse_one_of!(
+        state,
+        parsers: [
+            parse_str,
+            parse_int,
+            parse_func_call,
+            parse_variable,
+        ]
+    );
+
+    empty()
+}
+
 fn parse_func_call_target(state: &State) -> ExprRes {
     parse_one_of!(
         state,
@@ -27,6 +41,7 @@ fn parse_func_arg_expr(state: &State) -> ExprRes {
     parse_one_of!(
         state,
         parsers: [
+            parse_simple_touple,
             parse_str,
             parse_int,
             parse_func_expr_in_func_call_context,
@@ -80,17 +95,6 @@ fn parse_next_expr(state: &State) -> ExprRes {
             parse_touple,
             parse_list,
             parse_access,
-            parse_variable,
-        ]
-    );
-
-    empty()
-}
-
-fn parse_access_start(state: &State) -> ExprRes {
-    parse_one_of!(
-        state,
-        parsers: [
             parse_variable,
         ]
     );
@@ -232,6 +236,10 @@ impl State {
         }
 
         Ok(Program::new(expressions))
+    }
+
+    fn loc(&self) -> Option<Loc> {
+        self.tokens.get(0).map(|t| t.loc.clone())
     }
 }
 
@@ -554,6 +562,35 @@ fn parse_touple(state: &State) -> ExprRes {
     ))
 }
 
+fn parse_simple_touple(state: &State) -> ExprRes {
+    if state.is_in_block_arg {
+        return empty();
+    }
+
+    let loc = state.loc();
+    let (expr, state) = parse_simple_touple_arg(state)?;
+    let mut state = take(",", &state)?;
+
+    let mut expressions = vec![expr];
+
+    let loc = loc.expect("This token must exist at this point");
+
+    loop {
+        let (expr, next_state) = fail_if_empty(parse_simple_touple_arg(&state), || {
+            loc.error("Expected expression after comma")
+        })?;
+        expressions.push(expr);
+        state = next_state;
+        if let Some(next_state) = allow_empty(take(",", &state))? {
+            state = next_state;
+        } else {
+            break;
+        }
+    }
+
+    Ok((Expression::Touple(expressions).with_loc(&loc), state))
+}
+
 fn take_str(state: &State) -> Result<(String, State, Loc), ParseError> {
     let (token, state) = state.take_first().map_err(|()| None)?;
     let mut value = String::new();
@@ -585,18 +622,6 @@ fn take_variable(state: &State) -> ParseResult<Variable> {
         Ok((token.var(), state))
     } else {
         Err(None)
-    }
-}
-
-fn require_ident(state: &State) -> ParseResult<Token> {
-    let (token, state) = state
-        .take_first()
-        .map_err(|()| state.final_loc.error("Expected identifier"))?;
-
-    if is_ident(&token) {
-        Ok((token, state))
-    } else {
-        Err(Some(token.loc.error("Expected identifier")))
     }
 }
 
@@ -686,10 +711,9 @@ fn take_access(state: &State) -> ParseResult<Access> {
         let (dot, next_state) = pick(".", &state)?;
         state = next_state;
 
-        let (key, next_state) = fail_if_empty(
-            take_variable(&state),
-            || dot.loc.error("Required identifier after '.'")
-        )?;
+        let (key, next_state) = fail_if_empty(take_variable(&state), || {
+            dot.loc.error("Required identifier after '.'")
+        })?;
         state = next_state;
 
         access = Access {

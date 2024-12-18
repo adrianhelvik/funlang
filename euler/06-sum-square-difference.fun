@@ -37,9 +37,9 @@ let main = (n) {
     let b = square(sum number_list n)
     let diff = -(b, a)
 
-    println("sum of squares: ", a)
-    println("   squared sum: ", b)
-    println("          diff: ", diff)
+    println "sum of squares: ", a
+    println "   squared sum: ", b
+    println "          diff: ", diff
 }
 
 println "First off.. The example:"
