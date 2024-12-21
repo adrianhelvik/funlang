@@ -1,107 +1,128 @@
 use crate::types::{Loc, Token};
 use std::cell::RefCell;
 
-pub fn lex(source: &str) -> Vec<Token> {
-    let tokens = RefCell::new(Vec::new());
-    let word = RefCell::new(String::new());
-    let mut string = false;
+struct Lexer<'a> {
+    source: &'a str,
+    tokens: RefCell<Vec<Token>>,
+    word: String,
+    line: usize,
+    column: usize,
+}
 
-    let line = RefCell::new(1 as usize);
-    let column = RefCell::new(1 as usize);
-
-    let insert = || {
-        if word.borrow().len() == 0 {
-            return;
-        }
-        {
-            tokens.borrow_mut().push(Token::new(
-                unescape::unescape(&word.borrow().clone()).expect("Malformed string"),
-                Loc::new(line.borrow().clone(), column.borrow().clone()),
-            ));
-        }
-        if *word.borrow() == "\n" {
-            *line.borrow_mut() += 1;
-            column.replace(1);
-        } else {
-            *column.borrow_mut() += word.borrow().len();
-        }
-        word.replace(String::new());
-    };
-
-    let add_to_word = |value: char| {
-        word.borrow_mut().push(value);
-    };
-
-    let mut in_dot = false;
-    let mut escaped = false;
-
-    for (_i, c) in source.chars().enumerate() {
-        if in_dot {
-            if c == '.' {
-                add_to_word(c);
-                insert();
-                continue;
-            } else {
-                insert();
-            }
-            in_dot = false;
-        }
-
-        if c == '"' && !escaped {
-            if string {
-                add_to_word(c);
-                insert();
-            } else {
-                insert();
-                add_to_word(c);
-            }
-            string = !string;
-        } else if string {
-            if c == '\n' {
-                *line.borrow_mut() += 1;
-                column.replace(1);
-            }
-
-            if escaped {
-                // We only handle escaped " here,
-                // so add back the backslash for
-                // all other characters.
-                if c != '\"' {
-                    add_to_word('\\')
-                }
-                add_to_word(c);
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else {
-                add_to_word(c);
-            }
-        } else {
-            match c {
-                '.' => {
-                    insert();
-                    in_dot = true;
-                    add_to_word(c);
-                },
-                ' ' => {
-                    insert();
-                    *column.borrow_mut() += 1;
-                }
-                '\n' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | '=' => {
-                    insert();
-                    add_to_word(c);
-                    insert();
-                }
-                _ => {
-                    add_to_word(c);
-                }
-            }
+impl<'a> Lexer<'a> {
+    fn new(source: &'a str) -> Self {
+        Lexer {
+            source,
+            tokens: RefCell::new(vec![]),
+            word: String::new(),
+            line: 1,
+            column: 1,
         }
     }
 
-    insert();
+    fn insert(&mut self) {
+        if self.word.len() == 0 {
+            return;
+        }
+        let unescaped = unescape::unescape(&self.word).expect("Malformed string");
+        {
+            self.tokens.borrow_mut().push(Token::new(
+                &unescaped,
+                Loc::new(self.line.clone(), self.column.clone()),
+            ));
+        }
+        if self.word == "\n" {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += self.word.len();
+        }
+        self.word = String::new();
+    }
 
-    tokens.take()
+    fn add_to_word(&mut self, value: char) {
+        self.word.push(value);
+    }
+
+    fn lex(&mut self) -> Vec<Token> {
+        let mut string = false;
+        let mut in_dot = false;
+        let mut escaped = false;
+
+        for (_i, c) in self.source.chars().enumerate() {
+            if in_dot {
+                if c == '.' {
+                    self.add_to_word(c);
+                    self.insert();
+                    continue;
+                } else {
+                    self.insert();
+                }
+                in_dot = false;
+            }
+
+            if c == '"' && !escaped {
+                if string {
+                    self.add_to_word(c);
+                    self.insert();
+                } else {
+                    self.insert();
+                    self.add_to_word(c);
+                }
+                string = !string;
+            } else if string {
+                if c == '\n' {
+                    self.line += 1;
+                    self.column = 1;
+                }
+
+                if escaped {
+                    // We only handle escaped " here,
+                    // so add back the backslash for
+                    // all other characters.
+                    if c != '\"' {
+                        self.add_to_word('\\')
+                    }
+                    self.add_to_word(c);
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else {
+                    self.add_to_word(c);
+                }
+            } else {
+                match c {
+                    '.' => {
+                        self.insert();
+                        in_dot = true;
+                        self.add_to_word(c);
+                    }
+                    ' ' => {
+                        self.insert();
+                        self.column += 1;
+                    }
+                    '\n' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':' | '=' => {
+                        self.insert();
+                        self.add_to_word(c);
+                        self.insert();
+                    }
+                    _ => {
+                        self.add_to_word(c);
+                    }
+                }
+            }
+        }
+
+        self.insert();
+
+        self.tokens.take()
+    }
+}
+
+pub fn lex(source: &str) -> Vec<Token> {
+    let mut lexer = Lexer::new(source);
+
+    lexer.lex()
 }
 
 #[cfg(test)]
@@ -121,7 +142,7 @@ pub mod tests {
     pub fn it_can_tokenize_a_word() {
         let tokens = lex_str("abc");
 
-        assert_eq!(tokens, vec![String::from("abc")],);
+        assert_eq!(tokens, vec!["abc"],);
     }
 
     #[test]
@@ -309,10 +330,7 @@ pub mod tests {
     pub fn it_can_lex_for_expressions() {
         let tokens = lex("for i in 0..10 {}");
 
-        let token_parts: Vec<&str> = tokens
-            .iter()
-            .map(|token| token.value.as_ref())
-            .collect();
+        let token_parts: Vec<&str> = tokens.iter().map(|token| token.value.as_ref()).collect();
 
         assert_eq!(
             vec!["for", "i", "in", "0", "..", "10", "{", "}"],

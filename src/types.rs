@@ -53,7 +53,7 @@ pub struct Variable {
 impl Variable {
     pub fn new(token: Token) -> Self {
         Variable {
-            ident: token.value,
+            ident: token.value.to_string(),
             loc: token.loc,
         }
     }
@@ -309,13 +309,13 @@ impl Token {
         }
     }
 
-    pub fn new(value: String, loc: Loc) -> Self {
-        Token { value, loc }
+    pub fn new(value: &str, loc: Loc) -> Self {
+        Token { value: value.to_string(), loc }
     }
 
     pub fn var(&self) -> Variable {
         Variable {
-            ident: self.value.clone(),
+            ident: self.value.to_string(),
             loc: self.loc.clone(),
         }
     }
